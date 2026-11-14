@@ -137,6 +137,49 @@
         font: 13px/1.6 system-ui, sans-serif;
         color: #9ca3af;
       }
+      .bar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin: 0 0 18px;
+        font: 14px/1.4 system-ui, sans-serif;
+      }
+      .bar .small {
+        border: 1px solid #dbe0e6;
+        background: #f8fafc;
+        color: #1f2937;
+        border-radius: 9px;
+        padding: 8px 13px;
+        font: 14px/1.4 system-ui, sans-serif;
+        cursor: pointer;
+      }
+      .bar .green {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        border: 0;
+        border-radius: 9px;
+        padding: 9px 16px;
+        background: #1f7a3f;
+        color: #fff;
+        font: 15px/1.4 system-ui, sans-serif;
+        cursor: pointer;
+      }
+      .bar input[type='text'] {
+        flex: 1 1 220px;
+        min-width: 180px;
+        border: 1px solid #dbe0e6;
+        border-radius: 9px;
+        padding: 9px 12px;
+        font: 14px/1.4 system-ui, sans-serif;
+      }
+      .bar select {
+        border: 1px solid #dbe0e6;
+        border-radius: 9px;
+        padding: 9px 10px;
+        font: 14px/1.4 system-ui, sans-serif;
+      }
     </style>
   </head>
   <body>
@@ -149,6 +192,24 @@
 
       <h1>Why Bilingual Reading Beats Translation Apps</h1>
       <p class="sub">A short note on keeping the original text in view while you learn.</p>
+
+      <!-- 控件区：用来验证按钮 / 占位符 / 下拉项 也会被翻译 -->
+      <div class="bar">
+        <button class="small" type="button">Add file</button>
+        <button class="green" type="button"><span class="ico">&#8249;&#8250;</span> Code</button>
+        <div class="small" role="button" tabindex="0">Share</div>
+        <button class="small" type="button" aria-label="More options" title="More options">⋯</button>
+      </div>
+      <div class="bar">
+        <input type="text" placeholder="Ask anything about this document" />
+        <select>
+          <option>English</option>
+          <option>Japanese</option>
+          <option>中文</option>
+        </select>
+        <input type="submit" value="Send message" />
+        <button class="small" type="button" disabled>Delete forever</button>
+      </div>
 
       <p>
         Reading a foreign language article used to mean one of two things: copying paragraphs into a translation

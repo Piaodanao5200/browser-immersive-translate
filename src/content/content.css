@@ -92,3 +92,63 @@ html[data-st-border='0'] .st-tr {
   border-left: none;
   padding-left: 0;
 }
+
+/* ---------------------------------------------------------------- */
+/* 按钮类控件：译文紧跟在原文后面，字号略小、颜色略淡，原文不动            */
+/* ---------------------------------------------------------------- */
+
+.st-tr-inline {
+  display: inline !important;
+  margin-left: 0.4em;
+  padding: 0;
+  font-family: inherit;
+  font-size: 0.82em;
+  font-style: normal;
+  font-weight: 400;
+  font-variant: normal;
+  line-height: inherit;
+  letter-spacing: normal;
+  text-align: inherit;
+  text-indent: 0;
+  text-transform: none;
+  text-decoration: none;
+  text-shadow: none;
+  white-space: nowrap;
+  vertical-align: baseline;
+  color: color-mix(in srgb, currentColor 64%, transparent);
+  cursor: inherit;
+  user-select: text;
+}
+
+.st-tr-inline::before {
+  content: '·';
+  margin-right: 0.3em;
+  opacity: 0.45;
+}
+
+.st-tr-inline.st-loading {
+  cursor: progress;
+}
+
+.st-tr-inline .st-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 1em;
+  vertical-align: middle;
+}
+
+.st-tr-inline .st-dots i {
+  width: 3px;
+  height: 3px;
+}
+
+.st-tr-inline.st-error {
+  color: #dc2626;
+}
+
+html[data-st-style='inherit'] .st-tr-inline,
+html[data-st-style='blue'] .st-tr-inline {
+  color: inherit;
+  opacity: 0.72;
+}

@@ -36,6 +36,27 @@
     'HEAD', 'TITLE', 'META', 'LINK', 'BR', 'HR', 'WBR'
   ]);
 
+  /* 按钮类控件：正文遍历跳过，改由 collectControls 走「内联小字」通道 */
+  const CONTROL_SELECTOR = [
+    'button',
+    '[role="button"]',
+    '[role="menuitem"]',
+    '[role="menuitemcheckbox"]',
+    '[role="menuitemradio"]',
+    '[role="tab"]',
+    '[role="option"]',
+    '[role="switch"]',
+    'summary'
+  ].join(',');
+
+  const MAX_CONTROLS = 600;
+  const CONTROL_MAX_TEXT = 120; // 按钮文字太长（整段导航）就不内联
+  const ATTR_MAX_TEXT = 80; // 占位符 / 选项值上限
+
+  function isControl(el) {
+    return !!(el && el.matches && el.matches(CONTROL_SELECTOR));
+  }
+
   function markUiHost(host) {
     host.id = 'st-ui-root';
     host.setAttribute('data-st-ui', '1');
@@ -97,6 +118,7 @@
   function shouldSkip(el) {
     if (el.nodeType !== 1) return true;
     if (SKIP_TAGS.has(el.tagName)) return true;
+    if (isControl(el)) return true; // 由 collectControls 单独处理
     if (el.hasAttribute(TR_ATTR) || el.hasAttribute(UNIT_ATTR)) return true;
     if (el.getAttribute('translate') === 'no') return true;
     if (el.classList && (el.classList.contains('notranslate') || el.classList.contains('st-tr'))) return true;
@@ -152,6 +174,84 @@
 
     walk(root);
     return units;
+  }
+
+  const EDGE_JUNK = new Set(' \t\r\n\u00a0-–—·•|\\/<>‹›«»„“”"\'`~!@#$%^&*+=_,.;:?！？。，、；：…（）()[]{}【】');
+
+  /**
+   * 按钮里常带文字图标（‹› + − ⋯ → 等），innerText 会把它们一起读出来，
+   * 发给引擎后译文里又带回来，看着像重复。翻译前把首尾的纯符号削掉。
+   */
+  function cleanControlText(text) {
+    const s = String(text || '');
+    let i = 0;
+    let j = s.length;
+    while (i < j && EDGE_JUNK.has(s[i])) i++;
+    while (j > i && EDGE_JUNK.has(s[j - 1])) j--;
+    return s.slice(i, j).trim();
+  }
+
+  function shouldSkipControl(el) {
+    if (!el.isConnected) return true;
+    if (el.hasAttribute(UNIT_ATTR) || el.hasAttribute(TR_ATTR)) return true;
+    if (el.closest('[' + TR_ATTR + ']')) return true;
+    if (el.closest('[data-st-ui]')) return true;
+    if (el.getAttribute('translate') === 'no') return true;
+    if (el.getAttribute('aria-hidden') === 'true') return true;
+    if (el.classList && el.classList.contains('notranslate')) return true;
+    let cs;
+    try {
+      cs = getComputedStyle(el);
+    } catch (e) {
+      return true;
+    }
+    if (!cs || cs.display === 'none' || cs.visibility === 'hidden') return true;
+    return false;
+  }
+
+  /** 按钮类控件：译文以「内联小字」追加在原文后面，原文不动 */
+  function collectControls(root) {
+    const out = [];
+    if (!root || !root.querySelectorAll) return out;
+    for (const el of root.querySelectorAll(CONTROL_SELECTOR)) {
+      if (out.length >= MAX_CONTROLS) break;
+      if (shouldSkipControl(el)) continue;
+      const text = cleanControlText(normalize(el.innerText || el.textContent || ''));
+      if (!text || text.length > CONTROL_MAX_TEXT) continue;
+      if (!looksTranslatable(text)) continue;
+      out.push({ el, text, kind: 'inline' });
+    }
+    return out;
+  }
+
+  /** 表单控件：占位符、提交按钮文字、下拉选项，结果写成「原文 · 译文」 */
+  function collectAttrUnits(root) {
+    const out = [];
+    if (!root || !root.querySelectorAll) return out;
+    const add = (el, attr, text, limit) => {
+      if (out.length >= MAX_CONTROLS) return;
+      if (!el.isConnected) return;
+      if (el.hasAttribute(UNIT_ATTR) || el.hasAttribute('data-st-attr')) return;
+      if (!text || text.length > limit) return;
+      if (!looksTranslatable(text)) return;
+      out.push({ el, text, kind: 'attr', attr, orig: text });
+    };
+
+    root.querySelectorAll('input[placeholder], textarea[placeholder]').forEach((el) => {
+      add(el, 'placeholder', normalize(el.getAttribute('placeholder') || ''), ATTR_MAX_TEXT);
+    });
+    root.querySelectorAll('input[type="submit"],input[type="button"],input[type="reset"]').forEach((el) => {
+      add(el, 'value', normalize(el.getAttribute('value') || el.value || ''), 40);
+    });
+    root.querySelectorAll('select option').forEach((el) => {
+      add(el, 'text', normalize(el.textContent || ''), 60);
+    });
+    return out;
+  }
+
+  /** 正文段落 + 按钮控件 + 表单控件，一次收齐 */
+  function collectAll(root) {
+    return collectUnits(root).concat(collectControls(root), collectAttrUnits(root));
   }
 
   function splitText(text) {
@@ -597,8 +697,9 @@
   }
 
   function createNode(unit) {
+    if (unit.kind === 'attr') return null; // 属性型（占位符/选项/提交按钮）没有节点
     const node = document.createElement('span');
-    node.className = 'st-tr st-loading';
+    node.className = (unit.kind === 'inline' ? 'st-tr-inline' : 'st-tr') + ' st-loading';
     node.setAttribute(TR_ATTR, '1');
     node.setAttribute('data-st-rid', String(runId));
     node.innerHTML = '<span class="st-dots"><i></i><i></i><i></i></span>';
@@ -613,6 +714,10 @@
       if (u.el.hasAttribute(UNIT_ATTR)) continue;
       if (u.el.closest('[' + TR_ATTR + ']')) continue;
       u.el.setAttribute(UNIT_ATTR, '1');
+      if (u.kind === 'attr') {
+        u.el.setAttribute('data-st-attr', u.attr);
+        u.el.setAttribute('data-st-orig', u.orig);
+      }
       u.rid = runId;
       const sep = /^zh|^ja|^ko/.test(settings.targetLang || '') ? '' : ' ';
       u.sep = sep;
@@ -699,17 +804,46 @@
     updateToast();
   }
 
+  /** 译文和原文一样（HTML→HTML、Web API→Web API）就别显示了，省得看着像复制两遍 */
+  function worthShowing(tr, src) {
+    const t = String(tr || '').trim();
+    if (!t) return false;
+    const target = (settings && settings.targetLang) || 'zh-Hans';
+    if (/^zh/.test(target) && !/[\u3400-\u9fff]/.test(t)) return false;
+    if (/^ja/.test(target) && !/[\u3040-\u30ff\u4e00-\u9fff]/.test(t)) return false;
+    if (/^ko/.test(target) && !/[\uac00-\ud7af]/.test(t)) return false;
+    const strip = (s) => String(s || '').toLowerCase().replace(/\s+/g, '');
+    return strip(t) !== strip(src);
+  }
+
   function updateUnit(unit) {
-    if (!unit.node || !unit.node.isConnected) return;
     const states = unit.parts.map((p) => p.state);
     if (states.indexOf('pending') >= 0) return;
 
-    if (states.indexOf('error') >= 0) {
-      const okText = unit.parts
-        .filter((p) => p.state === 'done')
-        .map((p) => p.tr)
-        .join(unit.sep);
-      unit.node.className = 'st-tr st-error';
+    const okText = unit.parts
+      .filter((p) => p.state === 'done')
+      .map((p) => p.tr)
+      .join(unit.sep);
+    const failed = states.indexOf('error') >= 0;
+
+    // 属性型：直接写回属性，没有节点可操作
+    if (unit.kind === 'attr') {
+      if (okText && worthShowing(okText, unit.orig)) applyAttr(unit, okText);
+      return;
+    }
+
+    if (!unit.node || !unit.node.isConnected) return;
+    const base = unit.kind === 'inline' ? 'st-tr-inline' : 'st-tr';
+
+    if (!failed && !worthShowing(okText, unit.text)) {
+      // 引擎原样返回，直接撤掉占位节点
+      unit.node.remove();
+      unit.node = null;
+      return;
+    }
+
+    if (failed) {
+      unit.node.className = base + ' st-error';
       unit.node.textContent = (okText ? okText + unit.sep : '') + '⚠ 部分内容翻译失败，点击重试';
       unit.node.onclick = (e) => {
         e.preventDefault();
@@ -719,9 +853,26 @@
       return;
     }
 
-    unit.node.className = 'st-tr';
-    unit.node.textContent = unit.parts.map((p) => p.tr).join(unit.sep);
+    unit.node.className = base;
+    unit.node.textContent = okText;
     unit.node.onclick = null;
+  }
+
+  /** 把译文写回属性 / 选项文字，页面自己改过原文就不动 */
+  function applyAttr(unit, tr) {
+    const el = unit.el;
+    if (!el || !el.isConnected || !tr) return;
+    if (unit.attr === 'placeholder') {
+      if (normalize(el.getAttribute('placeholder') || '') !== unit.orig) return;
+      el.setAttribute('placeholder', unit.orig + ' · ' + tr);
+    } else if (unit.attr === 'value') {
+      const now = normalize(el.getAttribute('value') || el.value || '');
+      if (now !== unit.orig) return;
+      el.value = unit.orig + ' · ' + tr;
+    } else if (unit.attr === 'text') {
+      if (normalize(el.textContent || '') !== unit.orig) return;
+      el.textContent = unit.orig + ' · ' + tr;
+    }
   }
 
   function retryUnit(unit) {
@@ -735,9 +886,12 @@
       }
     }
     if (!again.length) return;
-    unit.node.className = 'st-tr st-loading';
-    unit.node.innerHTML = '<span class="st-dots"><i></i><i></i><i></i></span>';
-    unit.node.onclick = null;
+    const base = unit.kind === 'inline' ? 'st-tr-inline' : 'st-tr';
+    if (unit.node) {
+      unit.node.className = base + ' st-loading';
+      unit.node.innerHTML = '<span class="st-dots"><i></i><i></i><i></i></span>';
+      unit.node.onclick = null;
+    }
     stat.failed = Math.max(0, stat.failed - again.length);
     pending = again.concat(pending);
     pump();
@@ -770,7 +924,7 @@
     startObserver();
     fab.setState('busy');
 
-    const units = collectUnits(document.body || document.documentElement);
+    const units = collectAll(document.body || document.documentElement);
     if (!units.length) {
       toast.show('这个页面没有找到需要翻译的文字', 'ok', 3000);
       fab.setState('idle');
@@ -783,6 +937,25 @@
     reportState();
   }
 
+  /** 把占位符 / 选项文字 / 提交按钮文字还原成原文 */
+  function restoreAttrs() {
+    document.querySelectorAll('[data-st-attr]').forEach((el) => {
+      const attr = el.getAttribute('data-st-attr');
+      const orig = el.getAttribute('data-st-orig') || '';
+      try {
+        if (attr === 'placeholder') el.setAttribute('placeholder', orig);
+        else if (attr === 'value') {
+          el.setAttribute('value', orig);
+          el.value = orig;
+        } else if (attr === 'text') el.textContent = orig;
+      } catch (e) {
+        /* ignore */
+      }
+      el.removeAttribute('data-st-attr');
+      el.removeAttribute('data-st-orig');
+    });
+  }
+
   function disable() {
     enabled = false;
     runId++;
@@ -792,6 +965,7 @@
     document.documentElement.removeAttribute('data-st-enabled');
     stopObserver();
     document.querySelectorAll('[' + TR_ATTR + ']').forEach((n) => n.remove());
+    restoreAttrs();
     document.querySelectorAll('[' + UNIT_ATTR + ']').forEach((n) => n.removeAttribute(UNIT_ATTR));
     toast.hide();
     bubble.hide();
@@ -836,7 +1010,7 @@
       clearTimeout(obsTimer);
       obsTimer = setTimeout(() => {
         if (!enabled) return;
-        const units = collectUnits(document.body || document.documentElement);
+        const units = collectAll(document.body || document.documentElement);
         const added = addUnits(units);
         if (added) pump();
       }, 550);
