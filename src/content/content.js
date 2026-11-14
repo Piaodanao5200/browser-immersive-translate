@@ -957,7 +957,7 @@
     } catch (e) {
       settings = ST.mergeSettings({});
     }
-    if (settings.showFab !== false) fab.ensure();
+    fab.setVisible(settings.showFab !== false);
     if (ST.isAutoSite(location.hostname, settings.autoSites)) {
       setTimeout(() => {
         if (!enabled) enable();

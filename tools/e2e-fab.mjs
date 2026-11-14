@@ -176,13 +176,22 @@ try {
   );
   const sw = await cdp(swT.webSocketDebuggerUrl);
   const pos = await evalOn(sw, `(async () => (await chrome.storage.local.get('fabPos')).fabPos || null)()`);
-  sw.ws.close();
   check(
     '拖动后位置生效并落盘',
     moved.left < 250 && moved.top < 420 && !!pos,
     `left=${moved.left} top=${moved.top} pos=${JSON.stringify(pos)}`
   );
   check('拖动不应误触发翻译', moved.tr === 0, `tr=${moved.tr}`);
+
+  await evalOn(sw, `chrome.storage.sync.set({ showFab: false })`);
+  await sleep(700);
+  const hidden = await evalOn(page, FAB_INFO);
+  check('设置页关闭开关后按钮隐藏', hidden.cls.includes('out'), hidden.cls);
+  await evalOn(sw, `chrome.storage.sync.set({ showFab: true })`);
+  await sleep(500);
+  sw.ws.close();
+  const back = await evalOn(page, FAB_INFO);
+  check('重新打开开关按钮恢复', !back.cls.includes('out'), back.cls);
 
   const shot2 = await page.send('Page.captureScreenshot', { format: 'png', clip: { x: 0, y: 0, width: 320, height: 460, scale: 2 } });
   fs.writeFileSync(path.join(OUT, 'shot-fab-idle.png'), Buffer.from(shot2.data, 'base64'));
