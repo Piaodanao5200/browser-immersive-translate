@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Why Bilingual Reading Works — 测试页</title>
+    <style>
+      body {
+        margin: 0;
+        background: #fbfbfd;
+        color: #1f2430;
+        font: 17px/1.75 Georgia, 'Times New Roman', serif;
+      }
+      .wrap {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 56px 24px 120px;
+      }
+      nav {
+        display: flex;
+        gap: 18px;
+        font-size: 13px;
+        font-family: system-ui, sans-serif;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        color: #6b7280;
+        border-bottom: 1px solid #e5e7eb;
+        padding-bottom: 14px;
+        margin-bottom: 36px;
+      }
+      h1 {
+        font-size: 40px;
+        line-height: 1.2;
+        letter-spacing: -0.5px;
+        margin: 0 0 14px;
+      }
+      .sub {
+        font-size: 17px;
+        color: #6b7280;
+        font-style: italic;
+        margin: 0 0 40px;
+      }
+      h2 {
+        font-size: 24px;
+        margin: 44px 0 12px;
+      }
+      h3 {
+        font-size: 19px;
+        margin: 28px 0 10px;
+      }
+      p {
+        margin: 0 0 20px;
+      }
+      ul {
+        margin: 0 0 22px;
+        padding-left: 24px;
+      }
+      li {
+        margin-bottom: 8px;
+      }
+      blockquote {
+        margin: 26px 0;
+        padding: 4px 0 4px 18px;
+        border-left: 3px solid #d1d5db;
+        color: #4b5563;
+        font-style: italic;
+      }
+      pre {
+        background: #111827;
+        color: #e5e7eb;
+        padding: 16px 18px;
+        border-radius: 10px;
+        overflow: auto;
+        font: 13px/1.6 ui-monospace, Consolas, monospace;
+        margin: 0 0 24px;
+      }
+      code {
+        font-family: ui-monospace, Consolas, monospace;
+        font-size: 0.9em;
+        background: #eef1f6;
+        padding: 1px 5px;
+        border-radius: 4px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-family: system-ui, sans-serif;
+        font-size: 15px;
+        margin: 0 0 26px;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 10px 12px;
+        border-bottom: 1px solid #e5e7eb;
+      }
+      th {
+        background: #f3f4f6;
+        font-weight: 600;
+      }
+      .cards {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+        margin-bottom: 26px;
+        font-family: system-ui, sans-serif;
+      }
+      .card {
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 16px;
+      }
+      .card b {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 15px;
+      }
+      .card span {
+        font-size: 14px;
+        color: #6b7280;
+      }
+      .btn {
+        display: inline-block;
+        padding: 9px 18px;
+        border-radius: 8px;
+        background: #2563eb;
+        color: #fff;
+        font: 14px/1 system-ui, sans-serif;
+        text-decoration: none;
+        border: 0;
+      }
+      footer {
+        margin-top: 56px;
+        padding-top: 18px;
+        border-top: 1px solid #e5e7eb;
+        font: 13px/1.6 system-ui, sans-serif;
+        color: #9ca3af;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <nav>
+        <span>Essays</span>
+        <span>Research</span>
+        <span>About</span>
+      </nav>
+
+      <h1>Why Bilingual Reading Beats Translation Apps</h1>
+      <p class="sub">A short note on keeping the original text in view while you learn.</p>
+
+      <p>
+        Reading a foreign language article used to mean one of two things: copying paragraphs into a translation
+        tool, or accepting whatever the browser produced when it replaced the page entirely. Both approaches throw
+        away the original wording, and with it the context that makes reading worthwhile.
+      </p>
+
+      <p>
+        A better arrangement keeps the source text exactly where it is and places the translation directly beneath
+        it. Nothing moves, nothing disappears, and your eye can travel from one to the other in a single glance. This
+        is the same trick subtitles use, and it works for the same reason: comparison is cheaper than recall.
+      </p>
+
+      <h2>Three practical advantages</h2>
+
+      <ul>
+        <li>Terminology stays visible, so you can check how a specific phrase was handled.</li>
+        <li>Layout is preserved, which matters for documentation, tables and technical diagrams.</li>
+        <li>You can turn it off instantly and keep reading the original without reloading.</li>
+      </ul>
+
+      <blockquote>
+        The goal is not to remove the foreign language from the page. The goal is to put it within reach.
+      </blockquote>
+
+      <h2>How the rendering layer works</h2>
+
+      <p>
+        Each block of text is collected, filtered and sent to a translation service in small batches. When a batch
+        comes back, a new element is appended inside the original block, styled to read as a subtitle. The original
+        text nodes are never touched, so the page's own styling and event handlers keep working.
+      </p>
+
+      <pre><code>const units = collectUnits(document.body);
+for (const chunk of chunked(units, 6)) {
+  const results = await translate(chunk.map(u =&gt; u.text));
+  chunk.forEach((u, i) =&gt; render(u, results[i]));
+}</code></pre>
+
+      <h3>What gets skipped</h3>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Element</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Code blocks</td>
+            <td>Translating source code breaks its meaning</td>
+          </tr>
+          <tr>
+            <td>Form controls</td>
+            <td>Values are edited by the user, not read</td>
+          </tr>
+          <tr>
+            <td>Hidden nodes</td>
+            <td>They are never displayed, so the request is wasted</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="cards">
+        <div class="card"><b>Paragraph level</b><span>Each block is translated as one semantic unit.</span></div>
+        <div class="card"><b>Incremental</b><span>New content added later is picked up automatically.</span></div>
+      </div>
+
+      <p>
+        这一段本来就是中文，插件应当跳过它，不要在下面再叠加一行一模一样的译文。如果页面上出现了重复的中文，
+        说明语言检测失效了。
+      </p>
+
+      <h2>Dynamic content</h2>
+
+      <p id="late">This paragraph is injected two seconds after load to test incremental translation.</p>
+
+      <p>
+        <a class="btn" href="#">Read the full essay</a>
+      </p>
+
+      <footer>Demo page for the 字幕译 browser extension. Not a real article.</footer>
+    </div>
+
+    <script>
+      setTimeout(() => {
+        const p = document.createElement('p');
+        p.textContent =
+          'This paragraph did not exist when the page first loaded, and it should still receive a translation.';
+        document.querySelector('.wrap').appendChild(p);
+      }, 2000);
+    </script>
+  </body>
+</html>

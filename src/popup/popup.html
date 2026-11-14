@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+    <title>字幕译</title>
+  </head>
+  <body>
+    <header>
+      <img src="../../icons/icon32.png" alt="" width="28" height="28" />
+      <div class="meta">
+        <strong>字幕译</strong>
+        <span id="host">当前页面</span>
+      </div>
+    </header>
+
+    <button id="toggle" class="primary" type="button">翻译此页</button>
+    <p class="hint" id="hint" hidden></p>
+
+    <div class="field">
+      <label for="engine">翻译引擎</label>
+      <select id="engine"></select>
+    </div>
+
+    <div class="field">
+      <label for="lang">目标语言</label>
+      <select id="lang"></select>
+    </div>
+
+    <label class="switch">
+      <input type="checkbox" id="selection" />
+      <span>划词翻译</span>
+    </label>
+
+    <label class="switch">
+      <input type="checkbox" id="autoSite" />
+      <span>本站自动翻译</span>
+    </label>
+
+    <footer>
+      <a href="#" id="options">更多设置</a>
+      <span class="kbd">Alt + T</span>
+    </footer>
+
+    <script src="../shared.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

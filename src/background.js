@@ -1,0 +1,459 @@
+/* 字幕译 - 后台 Service Worker：多引擎翻译调度 + 缓存 + 快捷键分发 */
+importScripts('shared.js');
+
+const { langCode, hash, mergeSettings } = self.ST;
+
+/* ------------------------------------------------------------------ */
+/* 缓存：内存 Map + 定期落盘 storage.local                             */
+/* ------------------------------------------------------------------ */
+const CACHE_KEY = 'tcache';
+const CACHE_MAX = 4000;
+
+let memCache = null;
+let flushTimer = null;
+
+async function loadCache() {
+  if (memCache) return memCache;
+  try {
+    const data = await chrome.storage.local.get(CACHE_KEY);
+    memCache = new Map(Object.entries(data[CACHE_KEY] || {}));
+  } catch (e) {
+    memCache = new Map();
+  }
+  return memCache;
+}
+
+function cacheSet(key, value) {
+  if (!memCache) return;
+  memCache.delete(key);
+  memCache.set(key, value);
+  scheduleFlush();
+}
+
+function scheduleFlush() {
+  if (flushTimer) return;
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    flushCache();
+  }, 3000);
+}
+
+async function flushCache() {
+  if (!memCache) return;
+  try {
+    let entries = [...memCache.entries()];
+    if (entries.length > CACHE_MAX) {
+      entries = entries.slice(entries.length - CACHE_MAX);
+      memCache = new Map(entries);
+    }
+    await chrome.storage.local.set({ [CACHE_KEY]: Object.fromEntries(entries) });
+  } catch (e) {
+    /* 超出配额时静默失败，不影响翻译 */
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* 引擎实现                                                            */
+/* ------------------------------------------------------------------ */
+
+/** 微软 Edge 网页翻译免鉴权端点（2026 可用，需浏览器 UA） */
+async function engineMicrosoft(texts, to) {
+  const params = new URLSearchParams({ to: langCode(to, 'microsoft'), 'api-version': '3.0' });
+  const url = 'https://edge.microsoft.com/translate/translatetext?' + params.toString();
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(texts)
+  });
+  if (!res.ok) throw new Error('微软接口 HTTP ' + res.status);
+  const data = await res.json();
+  if (!Array.isArray(data) || data.length !== texts.length) throw new Error('微软接口返回结构异常');
+  return data.map((d) => {
+    const t = d && d.translations && d.translations[0] && d.translations[0].text;
+    return typeof t === 'string' ? t : '';
+  });
+}
+
+/** Google 免费端点（国内通常不通，多作为备用） */
+async function engineGoogle(texts, to) {
+  const out = [];
+  const tl = langCode(to, 'google');
+  for (const text of texts) {
+    const url =
+      'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=' +
+      encodeURIComponent(tl) +
+      '&dt=t&q=' +
+      encodeURIComponent(text);
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('Google 接口 HTTP ' + res.status);
+    const data = await res.json();
+    const seg = (data && data[0]) || [];
+    out.push(seg.map((s) => (s && s[0]) || '').join(''));
+  }
+  return out;
+}
+
+/** 解码 HTML 实体（MyMemory 会返回 &#39; 之类的实体） */
+function decodeEntities(text) {
+  return String(text)
+    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+/** MyMemory 免费接口（限流严格，单次上限约 500 字符，仅作最后兜底） */
+async function engineMyMemory(texts, to) {
+  const out = [];
+  const tl = langCode(to, 'mymemory');
+  for (const text of texts) {
+    const pieces = splitByLimit(text, 460);
+    const translated = [];
+    for (const piece of pieces) {
+      const url =
+        'https://api.mymemory.translated.net/get?q=' +
+        encodeURIComponent(piece) +
+        '&langpair=' +
+        encodeURIComponent('en|' + tl);
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('MyMemory 接口 HTTP ' + res.status);
+      const data = await res.json();
+      const t = data && data.responseData && data.responseData.translatedText;
+      if (typeof t !== 'string') throw new Error('MyMemory 接口返回异常');
+      translated.push(decodeEntities(t));
+    }
+    out.push(translated.join(' '));
+  }
+  return out;
+}
+
+/** OpenAI 兼容大模型接口，一次请求翻多段 */
+async function engineLLM(texts, to, settings) {
+  const llm = settings.llm || {};
+  if (!llm.apiKey) throw new Error('未填写 AI 接口密钥，请到设置页配置');
+  // 本地先拦一道：控制台里最容易复制错的就是「密钥 ID」那一列（UUID 格式）
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(llm.apiKey).trim())) {
+    throw new Error('这是「密钥 ID」（UUID），不是密钥本身。请到控制台复制 sk- 开头的完整密钥。');
+  }
+  if (/\*/.test(llm.apiKey)) {
+    throw new Error('密钥里有星号（脱敏显示值）。请点控制台的「显示 / 复制」取完整密钥，或新建一个。');
+  }
+  if (!llm.baseUrl) throw new Error('未填写 AI 接口地址');
+  const target = langCode(to, 'llm');
+  const system =
+    '你是一名专业翻译引擎。用户会发来一个 JSON 字符串数组，请把每一项翻译成' +
+    target +
+    '。要求：\n' +
+    '1. 只输出 JSON 字符串数组，长度与输入严格一致；不要输出任何解释、序号或 markdown 代码块；\n' +
+    '2. 术语前后一致，专有名词保留原文或使用通行译名；\n' +
+    '3. 保留原文的标点语气与换行，不要合并或拆分条目；\n' +
+    '4. 若某项本身已经是' +
+    target +
+    '，原样返回。';
+
+  const body = {
+    model: llm.model || 'deepseek-flash',
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: JSON.stringify(texts) }
+    ],
+    temperature: 0.2,
+    stream: false
+  };
+
+  // DeepSeek V4 默认开启思考模式，翻译场景只会更慢更贵，显式关掉。
+  // 该字段只有 DeepSeek 认，其它厂商传了可能 400，所以按域名判断。
+  if (/deepseek\.com/i.test(llm.baseUrl)) {
+    body.thinking = { type: 'disabled' };
+  }
+
+  const url = String(llm.baseUrl).replace(/\/+$/, '') + '/chat/completions';
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + llm.apiKey
+    },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(describeLLMError(res.status, detail));
+  }
+  const data = await res.json();
+  const content = (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
+  return parseLLMArray(content, texts.length);
+}
+
+/**
+ * 把各家的报错翻译成人能看懂的一句话。
+ */
+function describeLLMError(status, detail) {
+  const body = String(detail || '');
+  if (status === 401) {
+    return 'AI 接口 401：密钥无效。确认复制的是控制台里 sk- 开头的完整密钥（不是「密钥 ID」，也不带 ****），且该密钥未被删除或过期。';
+  }
+  if (status === 402) return 'AI 接口 402：账户余额不足，请先充值。';
+  if (status === 403) return 'AI 接口 403：该密钥无权访问此模型或地区受限。';
+  if (status === 404) return 'AI 接口 404：接口地址或模型名不对。地址要填到 /v1 结尾，模型名以控制台为准。';
+  if (status === 429) return 'AI 接口 429：请求过于频繁或额度已用尽，稍后重试。';
+  return 'AI 接口 HTTP ' + status + (body ? '：' + body.slice(0, 120) : '');
+}
+
+function parseLLMArray(content, expect) {
+  let s = String(content).trim();
+  s = s.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+  const first = s.indexOf('[');
+  const last = s.lastIndexOf(']');
+  if (first >= 0 && last > first) s = s.slice(first, last + 1);
+  try {
+    const arr = JSON.parse(s);
+    if (Array.isArray(arr) && arr.length === expect) return arr.map((x) => String(x == null ? '' : x));
+  } catch (e) {
+    /* 落到下面的退化解析 */
+  }
+  const lines = String(content)
+    .split('\n')
+    .map((l) => l.replace(/^\s*(?:\d+\s*[.、)]|[-*])\s*/, '').trim())
+    .filter(Boolean);
+  if (lines.length === expect) return lines;
+  throw new Error('AI 返回内容无法解析为 JSON 数组');
+}
+
+/* ------------------------------------------------------------------ */
+/* 调度：分片 + 缓存 + 失败降级                                        */
+/* ------------------------------------------------------------------ */
+
+function splitByLimit(text, limit) {
+  if (text.length <= limit) return [text];
+  const out = [];
+  let rest = text;
+  while (rest.length > limit) {
+    let cut = rest.lastIndexOf(' ', limit);
+    if (cut < limit * 0.5) cut = limit;
+    out.push(rest.slice(0, cut));
+    rest = rest.slice(cut);
+  }
+  if (rest) out.push(rest);
+  return out;
+}
+
+function groupIndices(indices, texts, maxChars, maxItems) {
+  const groups = [];
+  let cur = [];
+  let len = 0;
+  for (const i of indices) {
+    const l = texts[i].length;
+    if (cur.length && (len + l > maxChars || cur.length >= maxItems)) {
+      groups.push(cur);
+      cur = [];
+      len = 0;
+    }
+    cur.push(i);
+    len += l;
+  }
+  if (cur.length) groups.push(cur);
+  return groups;
+}
+
+const AUTO_CHAIN = ['microsoft', 'google', 'mymemory'];
+
+function buildChain(engine) {
+  if (engine === 'llm') return ['llm'];
+  const chain = [engine];
+  for (const e of AUTO_CHAIN) if (e !== engine) chain.push(e);
+  return chain;
+}
+
+async function callEngine(engine, texts, to, settings) {
+  switch (engine) {
+    case 'microsoft':
+      return engineMicrosoft(texts, to);
+    case 'google':
+      return engineGoogle(texts, to);
+    case 'mymemory':
+      return engineMyMemory(texts, to);
+    case 'llm':
+      return engineLLM(texts, to, settings);
+    default:
+      throw new Error('未知翻译引擎：' + engine);
+  }
+}
+
+async function translateTexts(texts, rawSettings) {
+  const settings = mergeSettings(rawSettings);
+  const to = settings.targetLang || 'zh-Hans';
+  const engine = settings.engine || 'microsoft';
+  const modelTag = engine === 'llm' ? '|' + (settings.llm.model || '') : '';
+
+  const cache = await loadCache();
+  const results = new Array(texts.length).fill('');
+  const missing = [];
+
+  texts.forEach((text, i) => {
+    const key = engine + modelTag + '|' + to + '|' + hash(text);
+    const hit = cache.get(key);
+    if (typeof hit === 'string' && hit) {
+      results[i] = hit;
+      cache.delete(key);
+      cache.set(key, hit);
+    } else {
+      missing.push(i);
+    }
+  });
+
+  let usedEngine = engine;
+  let lastError = null;
+
+  if (missing.length) {
+    const groups = groupIndices(missing, texts, 1600, 8);
+    const chain = buildChain(engine);
+    let cursor = 0;
+
+    const worker = async () => {
+      while (cursor < groups.length) {
+        const group = groups[cursor++];
+        const payload = group.map((i) => texts[i]);
+        let ok = false;
+        for (const candidate of chain) {
+          try {
+            const out = await callEngine(candidate, payload, to, settings);
+            if (!Array.isArray(out) || out.length !== payload.length) throw new Error('引擎返回条数不匹配');
+            group.forEach((idx, k) => {
+              const value = String(out[k] == null ? '' : out[k]);
+              results[idx] = value;
+              if (value) {
+                cacheSet(engine + modelTag + '|' + to + '|' + hash(texts[idx]), value);
+              }
+            });
+            usedEngine = candidate;
+            ok = true;
+            break;
+          } catch (err) {
+            lastError = err;
+          }
+        }
+        if (!ok) {
+          // 该片全部引擎失败：留空，由内容脚本标记为重试
+          group.forEach((idx) => {
+            results[idx] = '';
+          });
+        }
+      }
+    };
+
+    const parallel = Math.min(2, groups.length);
+    await Promise.all(Array.from({ length: parallel }, worker));
+  }
+
+  const failed = results.some((r) => !r);
+  return {
+    results,
+    engine: usedEngine,
+    error: failed && lastError ? String(lastError.message || lastError) : null
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* 消息处理                                                            */
+/* ------------------------------------------------------------------ */
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  (async () => {
+    try {
+      switch (msg && msg.type) {
+        case 'translate': {
+          const r = await translateTexts(msg.texts || [], msg.settings);
+          sendResponse({ ok: true, results: r.results, engine: r.engine, error: r.error });
+          break;
+        }
+        case 'test-engine': {
+          const r = await translateTexts(['Hello world, this is a translation test.'], msg.settings);
+          sendResponse({
+            ok: !!r.results[0],
+            text: r.results[0] || '',
+            engine: r.engine,
+            error: r.error || (r.results[0] ? null : '引擎无返回内容')
+          });
+          break;
+        }
+        case 'clear-cache': {
+          memCache = new Map();
+          await chrome.storage.local.remove(CACHE_KEY);
+          sendResponse({ ok: true });
+          break;
+        }
+        case 'cache-info': {
+          const c = await loadCache();
+          sendResponse({ ok: true, size: c.size });
+          break;
+        }
+        case 'page-state': {
+          // 内容脚本上报开关状态，用于在图标上显示角标
+          const tabId = sender.tab && sender.tab.id;
+          if (typeof tabId === 'number') {
+            try {
+              await chrome.action.setBadgeText({ tabId, text: msg.enabled ? 'ON' : '' });
+              await chrome.action.setBadgeBackgroundColor({ tabId, color: '#2563eb' });
+            } catch (e) {
+              /* 标签页已关闭 */
+            }
+          }
+          sendResponse({ ok: true });
+          break;
+        }
+        case 'open-options': {
+          chrome.runtime.openOptionsPage();
+          sendResponse({ ok: true });
+          break;
+        }
+        default:
+          sendResponse({ ok: false, error: '未知消息类型' });
+      }
+    } catch (err) {
+      sendResponse({ ok: false, error: String((err && err.message) || err) });
+    }
+  })();
+  return true;
+});
+
+/* ------------------------------------------------------------------ */
+/* 快捷键 Alt+T：转发给内容脚本；页面未注入时兜底注入                    */
+/* ------------------------------------------------------------------ */
+async function ensureContentScript(tabId) {
+  await chrome.scripting.insertCSS({ target: { tabId }, files: ['src/content/content.css'] });
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ['src/shared.js', 'src/content/content.js']
+  });
+}
+
+chrome.commands.onCommand.addListener(async (command) => {
+  if (command !== 'toggle-page-translation') return;
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || typeof tab.id !== 'number') return;
+
+  try {
+    await chrome.tabs.sendMessage(tab.id, { type: 'toggle' });
+    return;
+  } catch (e) {
+    /* 扩展安装前就已打开的页面，内容脚本尚未注入 */
+  }
+
+  try {
+    await ensureContentScript(tab.id);
+    await chrome.tabs.sendMessage(tab.id, { type: 'toggle' });
+  } catch (e) {
+    try {
+      await chrome.action.setBadgeText({ tabId: tab.id, text: '' });
+    } catch (_) {}
+  }
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  loadCache();
+});
+
+loadCache();

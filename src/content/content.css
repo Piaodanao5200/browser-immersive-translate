@@ -1,0 +1,94 @@
+/* 字幕译 - 页面内译文样式（注入到目标页面） */
+
+.st-tr {
+  display: block !important;
+  margin: 0.35em 0 0.25em !important;
+  padding-left: 0.7em !important;
+  border-left: 2px solid rgba(59, 130, 246, 0.55);
+  box-sizing: border-box;
+  font-family: inherit;
+  font-size: calc(1em * var(--st-scale, 1));
+  font-style: normal;
+  font-weight: inherit;
+  font-variant: normal;
+  line-height: 1.75;
+  letter-spacing: normal;
+  text-align: inherit;
+  text-indent: 0;
+  text-transform: none;
+  text-decoration: none;
+  text-shadow: none;
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
+  color: color-mix(in srgb, currentColor 72%, transparent);
+  cursor: text;
+  user-select: text;
+  transition: opacity 0.15s ease;
+}
+
+.st-tr.st-loading {
+  cursor: progress;
+}
+
+.st-tr .st-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 1.4em;
+  vertical-align: middle;
+}
+
+.st-tr .st-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(59, 130, 246, 0.65);
+  animation: st-blink 1.1s infinite ease-in-out;
+}
+
+.st-tr .st-dots i:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.st-tr .st-dots i:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+@keyframes st-blink {
+  0%,
+  70%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  35% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+.st-tr.st-error {
+  color: #dc2626;
+  border-left-color: rgba(220, 38, 38, 0.5);
+  cursor: pointer;
+}
+
+/* 译文配色方案 */
+html[data-st-style='inherit'] .st-tr {
+  color: inherit;
+}
+
+html[data-st-style='blue'] .st-tr {
+  color: #2563eb;
+}
+
+html[data-st-style='gray'] .st-tr {
+  color: color-mix(in srgb, currentColor 68%, transparent);
+}
+
+/* 关闭左边框 */
+html[data-st-border='0'] .st-tr {
+  border-left: none;
+  padding-left: 0;
+}
