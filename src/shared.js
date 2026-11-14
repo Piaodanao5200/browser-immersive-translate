@@ -15,6 +15,7 @@
     textStyle: 'gray', // gray | inherit | blue
     showBorder: true,
     selectionTranslate: true,
+    showFab: true, // 页面右侧的悬浮翻译按钮
     autoSites: []
   };
 

@@ -430,21 +430,57 @@ async function ensureContentScript(tabId) {
   });
 }
 
+/* ------------------------------------------------------------------ */
+/* 向标签页投递消息；内容脚本缺失时（安装前已打开的页面）先补注入          */
+/* ------------------------------------------------------------------ */
+async function deliver(tabId, msg) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, msg);
+  } catch (e) {
+    await ensureContentScript(tabId);
+    return await chrome.tabs.sendMessage(tabId, msg);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* 右键菜单：给「找不到按钮」的用户一个入口                              */
+/* ------------------------------------------------------------------ */
+function setupMenus() {
+  try {
+    chrome.contextMenus.removeAll(() => {
+      void chrome.runtime.lastError;
+      chrome.contextMenus.create(
+        { id: 'st-toggle', title: '字幕译：翻译此页 / 还原原文', contexts: ['page', 'frame'] },
+        () => void chrome.runtime.lastError
+      );
+      chrome.contextMenus.create(
+        { id: 'st-selection', title: '字幕译：翻译选中的文字', contexts: ['selection'] },
+        () => void chrome.runtime.lastError
+      );
+    });
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  const tabId = tab && tab.id;
+  if (typeof tabId !== 'number') return;
+  try {
+    if (info.menuItemId === 'st-selection') await deliver(tabId, { type: 'translate-selection' });
+    else if (info.menuItemId === 'st-toggle') await deliver(tabId, { type: 'toggle' });
+  } catch (e) {
+    /* chrome:// 等受限页面无法注入 */
+  }
+});
+
 chrome.commands.onCommand.addListener(async (command) => {
   if (command !== 'toggle-page-translation') return;
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab || typeof tab.id !== 'number') return;
 
   try {
-    await chrome.tabs.sendMessage(tab.id, { type: 'toggle' });
-    return;
-  } catch (e) {
-    /* 扩展安装前就已打开的页面，内容脚本尚未注入 */
-  }
-
-  try {
-    await ensureContentScript(tab.id);
-    await chrome.tabs.sendMessage(tab.id, { type: 'toggle' });
+    await deliver(tab.id, { type: 'toggle' });
   } catch (e) {
     try {
       await chrome.action.setBadgeText({ tabId: tab.id, text: '' });
@@ -453,7 +489,11 @@ chrome.commands.onCommand.addListener(async (command) => {
 });
 
 chrome.runtime.onInstalled.addListener(() => {
+  setupMenus();
   loadCache();
 });
 
+chrome.runtime.onStartup.addListener(() => setupMenus());
+
+setupMenus();
 loadCache();

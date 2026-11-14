@@ -53,6 +53,7 @@
     $('fontSizeVal').textContent = Math.round((settings.fontSize || 1) * 100) + '%';
     $('textStyle').value = settings.textStyle || 'gray';
     $('showBorder').checked = settings.showBorder !== false;
+    $('showFab').checked = settings.showFab !== false;
     $('selectionTranslate').checked = settings.selectionTranslate !== false;
     $('autoSites').value = (settings.autoSites || []).join('\n');
     $('llmSection').style.opacity = settings.engine === 'llm' ? '1' : '0.7';
@@ -71,6 +72,7 @@
       fontSize: parseFloat($('fontSize').value) || 1,
       textStyle: $('textStyle').value,
       showBorder: $('showBorder').checked,
+      showFab: $('showFab').checked,
       selectionTranslate: $('selectionTranslate').checked,
       autoSites: $('autoSites')
         .value.split('\n')
@@ -147,6 +149,7 @@
     $('apiKey').addEventListener('input', checkKey);
     $('apiKey').addEventListener('blur', checkKey);
     $('showBorder').addEventListener('change', scheduleSave);
+    $('showFab').addEventListener('change', scheduleSave);
     $('selectionTranslate').addEventListener('change', scheduleSave);
 
     $('test').addEventListener('click', testEngine);

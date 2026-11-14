@@ -352,6 +352,231 @@
   }
 
   /* ================================================================ */
+  /* 影子 DOM UI：页面右侧悬浮按钮（本项目唯一的显式入口）                 */
+  /* ================================================================ */
+
+  const fab = (() => {
+    let host = null;
+    let wrap = null;
+    let btn = null;
+    let ico = null;
+    let lbl = null;
+    let state = 'idle'; // idle | busy | on | error
+    let progress = '';
+    let shown = true;
+    let pos = null; // { right, top }，viewport 坐标
+    let drag = null;
+    let swallowClick = false;
+
+    const CSS =
+      '.wrap{position:fixed;right:16px;top:38%;z-index:2147483645;' +
+      'font:600 13px/1 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;' +
+      'transition:opacity .2s ease}' +
+      '.wrap.out{opacity:0;pointer-events:none}' +
+      '.btn{all:unset;display:flex;align-items:center;height:46px;box-sizing:border-box;padding:0 13px;' +
+      'border-radius:999px;background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;cursor:pointer;' +
+      'user-select:none;-webkit-user-select:none;touch-action:none;' +
+      'box-shadow:0 6px 20px rgba(37,99,235,.34),0 1px 3px rgba(15,23,42,.18);' +
+      'transition:transform .16s ease,box-shadow .16s ease,background .16s ease}' +
+      '.btn:hover{transform:translateY(-1px);box-shadow:0 10px 26px rgba(37,99,235,.42)}' +
+      '.btn:active{transform:translateY(0)}' +
+      '.ico{width:20px;height:20px;flex:none;display:flex;align-items:center;justify-content:center;' +
+      'font-size:13px;font-weight:700;line-height:1}' +
+      '.lbl{max-width:0;opacity:0;overflow:hidden;white-space:nowrap;margin-left:0;' +
+      'transition:max-width .24s ease,opacity .18s ease,margin-left .24s ease}' +
+      '.wrap.open .lbl,.btn:hover .lbl{max-width:160px;opacity:1;margin-left:9px}' +
+      '.wrap.on .btn{background:#fff;color:#2563eb;border:1px solid rgba(37,99,235,.26);padding:0 13px;' +
+      'box-shadow:0 3px 12px rgba(37,99,235,.16),0 1px 3px rgba(15,23,42,.1)}' +
+      '.wrap.on .btn:hover{background:#f5f9ff}' +
+      '.wrap.err .btn{background:linear-gradient(135deg,#f87171,#dc2626);' +
+      'box-shadow:0 4px 14px rgba(220,38,38,.26)}' +
+      '.wrap.dragging .btn{cursor:grabbing;transform:none}' +
+      '.dots{display:flex;gap:3px;align-items:center}' +
+      '.dots i{width:4px;height:4px;border-radius:50%;background:currentColor;animation:stf 1s infinite}' +
+      '.dots i:nth-child(2){animation-delay:.15s}.dots i:nth-child(3){animation-delay:.3s}' +
+      '@keyframes stf{0%,100%{opacity:.3;transform:translateY(0)}50%{opacity:1;transform:translateY(-2px)}}' +
+      '@media print{.wrap{display:none!important}}';
+
+    function ensure() {
+      if (host && host.isConnected) return true;
+      if (!document.body && !document.documentElement) return false;
+      host = document.createElement('div');
+      host.id = 'st-fab-root';
+      host.setAttribute('data-st-ui', '1');
+      host.style.cssText = 'all:initial;position:fixed;left:0;top:0;width:0;height:0;';
+      const root = host.attachShadow({ mode: 'open' });
+      root.innerHTML =
+        '<style>' + CSS + '</style>' +
+        '<div class="wrap' + (shown ? '' : ' out') + '"><button class="btn" type="button">' +
+        '<span class="ico"></span><span class="lbl"></span></button></div>';
+      (document.body || document.documentElement).appendChild(host);
+
+      wrap = root.querySelector('.wrap');
+      btn = root.querySelector('.btn');
+      ico = root.querySelector('.ico');
+      lbl = root.querySelector('.lbl');
+
+      btn.addEventListener('click', onClick);
+      btn.addEventListener('pointerdown', onPointerDown);
+      btn.addEventListener('pointermove', onPointerMove);
+      btn.addEventListener('pointerup', onPointerUp);
+      btn.addEventListener('pointercancel', onPointerUp);
+      // 别让页面自己的拖拽/选择逻辑接管
+      for (const t of ['mousedown', 'mouseup', 'dblclick', 'contextmenu']) {
+        btn.addEventListener(t, (e) => e.stopPropagation());
+      }
+      window.addEventListener('resize', place);
+
+      readPos().then(() => {
+        place();
+        render();
+      });
+      render();
+      return true;
+    }
+
+    async function readPos() {
+      try {
+        const data = await chrome.storage.local.get('fabPos');
+        const p = data && data.fabPos;
+        if (p && typeof p.right === 'number' && typeof p.top === 'number') pos = p;
+      } catch (e) {
+        /* 用默认位置 */
+      }
+    }
+
+    function place() {
+      if (!wrap) return;
+      if (pos) {
+        const right = Math.min(Math.max(4, pos.right), Math.max(4, window.innerWidth - 56));
+        const top = Math.min(Math.max(4, pos.top), Math.max(4, window.innerHeight - 56));
+        wrap.style.right = right + 'px';
+        wrap.style.top = top + 'px';
+      } else {
+        wrap.style.right = '16px';
+        wrap.style.top = '38%';
+      }
+    }
+
+    function render() {
+      if (!wrap) return;
+      wrap.classList.toggle('on', state === 'on');
+      wrap.classList.toggle('err', state === 'error');
+      wrap.classList.toggle('open', state === 'busy');
+      wrap.classList.toggle('out', !shown);
+
+      if (state === 'busy') {
+        ico.innerHTML = '<span class="dots"><i></i><i></i><i></i></span>';
+        lbl.textContent = progress || '翻译中…';
+      } else if (state === 'on') {
+        ico.textContent = '原';
+        lbl.textContent = '显示原文';
+      } else if (state === 'error') {
+        ico.textContent = '!';
+        lbl.textContent = '重试';
+      } else {
+        ico.textContent = '译';
+        lbl.textContent = '翻译此页';
+      }
+      btn.title =
+        (state === 'on' ? '字幕译：还原原文' : '字幕译：翻译此页') + '（Alt+T，可拖动）';
+    }
+
+    function onClick(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (swallowClick) {
+        swallowClick = false;
+        return;
+      }
+      toggle();
+    }
+
+    function onPointerDown(e) {
+      if (e.button !== 0) return;
+      const r = btn.getBoundingClientRect();
+      drag = {
+        id: e.pointerId,
+        x: e.clientX,
+        y: e.clientY,
+        dx: e.clientX - r.left,
+        dy: e.clientY - r.top,
+        w: r.width,
+        h: r.height,
+        moved: false
+      };
+      try {
+        btn.setPointerCapture(e.pointerId);
+      } catch (err) {
+        /* ignore */
+      }
+      e.preventDefault();
+    }
+
+    function onPointerMove(e) {
+      if (!drag || e.pointerId !== drag.id) return;
+      if (!drag.moved) {
+        if (Math.abs(e.clientX - drag.x) < 4 && Math.abs(e.clientY - drag.y) < 4) return;
+        drag.moved = true;
+        wrap.classList.add('dragging');
+      }
+      const left = Math.min(Math.max(4, e.clientX - drag.dx), window.innerWidth - drag.w - 4);
+      const top = Math.min(Math.max(4, e.clientY - drag.dy), window.innerHeight - drag.h - 4);
+      wrap.style.left = Math.round(left) + 'px';
+      wrap.style.top = Math.round(top) + 'px';
+      wrap.style.right = 'auto';
+    }
+
+    function onPointerUp() {
+      if (!drag) return;
+      const moved = drag.moved;
+      drag = null;
+      if (!wrap) return;
+      wrap.classList.remove('dragging');
+      if (!moved) return;
+      swallowClick = true;
+      const r = btn.getBoundingClientRect();
+      pos = {
+        right: Math.round(window.innerWidth - r.right),
+        top: Math.round(r.top)
+      };
+      wrap.style.left = 'auto';
+      place();
+      try {
+        chrome.storage.local.set({ fabPos: pos });
+      } catch (e) {
+        /* ignore */
+      }
+    }
+
+    function setState(next) {
+      state = next;
+      if (next !== 'busy') progress = '';
+      if (ensure()) render();
+    }
+
+    function setProgress(text) {
+      progress = text || '';
+      if (state === 'busy' && wrap) {
+        lbl.textContent = progress || '翻译中…';
+      }
+    }
+
+    function setVisible(v) {
+      shown = !!v;
+      if (ensure()) render();
+    }
+
+    function destroy() {
+      if (host && host.parentNode) host.parentNode.removeChild(host);
+      host = null;
+      wrap = btn = ico = lbl = null;
+    }
+
+    return { ensure, setState, setProgress, setVisible, destroy };
+  })();
+
+  /* ================================================================ */
   /* 翻译主流程                                                        */
   /* ================================================================ */
 
@@ -430,10 +655,13 @@
       const ok = stat.total - stat.failed;
       if (stat.total === 0) return;
       if (stat.failed && stat.failed === stat.total) {
+        fab.setState('error');
         toast.show('翻译失败：' + (lastError || '请检查网络或引擎配置'), 'err', 6000);
       } else if (stat.failed) {
+        fab.setState('on');
         toast.show('已翻译 ' + ok + ' 段，' + stat.failed + ' 段失败', 'err', 5000);
       } else {
+        fab.setState('on');
         toast.show('已翻译 ' + ok + ' 段 · Alt+T 还原', 'ok', 2400);
       }
     }, 400);
@@ -520,6 +748,7 @@
     const left = stat.total - stat.done;
     if (left <= 0) return;
     toast.show('翻译中 ' + stat.done + ' / ' + stat.total, '', 0);
+    fab.setProgress('翻译中 ' + stat.done + '/' + stat.total);
   }
 
   /* ================================================================ */
@@ -539,10 +768,12 @@
     document.documentElement.setAttribute('data-st-enabled', '1');
     applyStyleVars();
     startObserver();
+    fab.setState('busy');
 
     const units = collectUnits(document.body || document.documentElement);
     if (!units.length) {
       toast.show('这个页面没有找到需要翻译的文字', 'ok', 3000);
+      fab.setState('idle');
       reportState();
       return;
     }
@@ -564,6 +795,7 @@
     document.querySelectorAll('[' + UNIT_ATTR + ']').forEach((n) => n.removeAttribute(UNIT_ATTR));
     toast.hide();
     bubble.hide();
+    fab.setState('idle');
     reportState();
   }
 
@@ -688,6 +920,25 @@
       sendResponse({ enabled, translating: !!(pending.length || activeChunks), total: stat.total, done: stat.done });
       return true;
     }
+    if (msg.type === 'translate-selection') {
+      (async () => {
+        if (!settings) settings = await ST.getSettings();
+        const picked = selectionText();
+        if (!picked) {
+          sendResponse({ ok: false, error: '没有选中文字' });
+          return;
+        }
+        const rect = picked.range.getBoundingClientRect();
+        bubble.show(rect, picked.text, '翻译中…');
+        sendResponse({ ok: true });
+      })();
+      return true;
+    }
+    if (msg.type === 'fab') {
+      fab.setVisible(!!msg.show);
+      sendResponse({ ok: true });
+      return true;
+    }
     return false;
   });
 
@@ -697,6 +948,7 @@
     for (const k of Object.keys(changes)) patch[k] = changes[k].newValue;
     settings = ST.mergeSettings(Object.assign({}, settings || {}, patch));
     if (enabled) applyStyleVars();
+    fab.setVisible(settings.showFab !== false);
   });
 
   (async () => {
@@ -705,6 +957,7 @@
     } catch (e) {
       settings = ST.mergeSettings({});
     }
+    if (settings.showFab !== false) fab.ensure();
     if (ST.isAutoSite(location.hostname, settings.autoSites)) {
       setTimeout(() => {
         if (!enabled) enable();
