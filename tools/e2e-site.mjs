@@ -68,6 +68,8 @@ const browser = spawn(
     `--user-data-dir=${userDir}`,
     '--load-extension=D:/浏览器翻译插件',
     '--disable-extensions-except=D:/浏览器翻译插件',
+    '--disable-sync',
+    '--disable-features=msEdgeIdentityFeature,msSyncConsent',
     '--no-first-run',
     '--no-default-browser-check',
     '--window-size=1400,1000',

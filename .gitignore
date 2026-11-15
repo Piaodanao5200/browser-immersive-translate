@@ -18,3 +18,6 @@ __pycache__/
 *.pyc
 node_modules/
 *.log
+
+# 巡检产物
+test/audit-report.json

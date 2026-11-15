@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 const EXT_DIR = 'D:/浏览器翻译插件';
-const PORT = 9444;
+const PORT = 9444 + Math.floor(Math.random() * 100);
 const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
 const OUT = 'D:/浏览器翻译插件/test';
 
@@ -74,6 +74,8 @@ const browser = spawn(
     `--user-data-dir=${userDir}`,
     `--load-extension=${EXT_DIR}`,
     `--disable-extensions-except=${EXT_DIR}`,
+    '--disable-sync',
+    '--disable-features=msEdgeIdentityFeature,msSyncConsent',
     '--no-first-run',
     '--no-default-browser-check',
     '--window-size=900,1100',
@@ -82,28 +84,26 @@ const browser = spawn(
   { stdio: 'ignore' }
 );
 
-let sw;
 let page;
 try {
   await waitFor(async () => (await fetch(`http://127.0.0.1:${PORT}/json/version`)).ok);
-  const swT = await waitFor(async () =>
-    (await targets()).find((t) => t.type === 'service_worker' && t.url.includes('/src/background.js'))
-  );
-  sw = await cdp(swT.webSocketDebuggerUrl);
-  const extId = new URL(swT.url).host;
+  // 只认我们自己的 target（内置扩展也是 chrome-extension://，认错会取到别人的 ID）
+  const extT = await waitFor(async () => (await targets()).find((t) => t.url.includes('/src/background.js')), 40000);
+  // 只从 target URL 里取扩展 ID；后续一律用扩展页面做控制端
+  // （background service worker 会休眠，休眠后 CDP 直接失联）
+  const extId = new URL(extT.url).host;
   console.log('扩展 ID:', extId);
 
-  // 快捷键注册
-  const cmds = await evalOn(sw, `(async () => (await chrome.commands.getAll()).map((c) => ({ name: c.name, key: c.shortcut })))()`);
-  check('快捷键已注册', !!cmds.find((c) => c.name === 'toggle-page-translation' && c.key), JSON.stringify(cmds));
-
-  // 用扩展页面作为消息发起方测试各引擎
   const pageT = await waitFor(async () => (await targets()).find((t) => t.type === 'page'));
   page = await cdp(pageT.webSocketDebuggerUrl);
   await page.send('Page.enable');
   await page.send('Runtime.enable');
   await page.send('Page.navigate', { url: `chrome-extension://${extId}/src/options/options.html` });
   await sleep(1800);
+
+  // 快捷键注册
+  const cmds = await evalOn(page, `(async () => (await chrome.commands.getAll()).map((c) => ({ name: c.name, key: c.shortcut })))()`);
+  check('快捷键已注册', !!cmds.find((c) => c.name === 'toggle-page-translation' && c.key), JSON.stringify(cmds));
 
   const uiText = await evalOn(page, `({ sections: document.querySelectorAll('section').length, title: document.title })`);
   check('设置页正常渲染', uiText.sections >= 5, JSON.stringify(uiText));
@@ -121,10 +121,14 @@ try {
       })} }))()`
     );
     const ok = !!(r && r.ok);
+    // AI 引擎没填 Key 时不再整体失败，而是自动降级到免费引擎——这里验的就是降级是否生效
+    const fellBackOk = ok && r.engine === 'microsoft' && /[\u4e00-\u9fff]/.test(r.text || '');
     check(
       `引擎 ${engine}`,
-      engine === 'llm' ? !ok && /密钥/.test(r.error || '') : ok,
-      ok ? r.engine + ' → ' + r.text : (r && r.error) || 'no resp'
+      engine === 'llm' ? fellBackOk : ok,
+      ok
+        ? r.engine + (r.engine !== engine ? '（无 Key，已降级）' : '') + ' → ' + r.text
+        : (r && r.error) || 'no resp'
     );
   }
 
@@ -141,10 +145,9 @@ try {
   check('流程未中断', false, e.message);
 } finally {
   try {
-    sw && sw.ws.close();
     page && page.ws.close();
   } catch (e) {}
-  browser.kill('SIGKILL');
+  spawn('taskkill', ['/PID', String(browser.pid), '/T', '/F'], { stdio: 'ignore' });
   await sleep(600);
   const pass = results.filter((r) => r.ok).length;
   console.log(`\n结果：${pass}/${results.length} 项通过`);

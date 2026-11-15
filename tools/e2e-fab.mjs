@@ -118,6 +118,8 @@ const browser = spawn(
     `--user-data-dir=${userDir}`,
     `--load-extension=${EXT_DIR}`,
     `--disable-extensions-except=${EXT_DIR}`,
+    '--disable-sync',
+    '--disable-features=msEdgeIdentityFeature,msSyncConsent',
     '--no-first-run',
     '--no-default-browser-check',
     '--window-size=1000,900',

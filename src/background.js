@@ -261,8 +261,18 @@ function groupIndices(indices, texts, maxChars, maxItems) {
 
 const AUTO_CHAIN = ['microsoft', 'google', 'mymemory'];
 
-function buildChain(engine) {
-  if (engine === 'llm') return ['llm'];
+const FATAL_LLM = /40[123]|余额|密钥|api ?key|unauthorized|invalid.?(token|key)/i;
+
+/** AI 引擎刚被证伪（Key 无效 / 余额不足）时，短时间内直接跳过它，别每个分段都先试一遍 */
+let llmBlockedUntil = 0;
+
+function buildChain(engine, opts) {
+  // AI 引擎排第一，但必须留后路：Key 失效 / 余额不足 / 模型下线时，
+  // 不能让整页一个字都翻不出来。
+  if (engine === 'llm') {
+    const skip = !!(opts && opts.skipLLM);
+    return skip ? ['microsoft', 'google', 'mymemory'] : ['llm', 'microsoft', 'google', 'mymemory'];
+  }
   const chain = [engine];
   for (const e of AUTO_CHAIN) if (e !== engine) chain.push(e);
   return chain;
@@ -281,6 +291,64 @@ async function callEngine(engine, texts, to, settings) {
     default:
       throw new Error('未知翻译引擎：' + engine);
   }
+}
+
+/**
+ * 同一个引擎先重试一次，仍然失败就把大包拆成两半分别再要。
+ * 批量发包偶尔会被整包拒绝（限流 / 瞬时 5xx），拆开后基本都能成，
+ * 不至于因为一个整包失败就掉到更慢的备用引擎。
+ */
+/** 最近失败记录：排查「为什么这些段没翻出来」用 */
+const recentErrors = [];
+function logError(engine, payload, err) {
+  recentErrors.push({
+    t: Date.now(),
+    engine,
+    n: payload.length,
+    chars: payload.reduce((a, x) => a + x.length, 0),
+    msg: String((err && err.message) || err).slice(0, 120)
+  });
+  if (recentErrors.length > 60) recentErrors.shift();
+}
+
+/** 被限流时全局退避一小段，别把后面的请求一起打挂 */
+let cooldownUntil = 0;
+function noteThrottle() {
+  cooldownUntil = Math.max(cooldownUntil, Date.now() + 800);
+}
+async function waitCooldown() {
+  const wait = cooldownUntil - Date.now();
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+}
+
+async function callWithRetry(engine, payload, to, settings, depth = 0) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await waitCooldown();
+    try {
+      const out = await callEngine(engine, payload, to, settings);
+      if (Array.isArray(out) && out.length === payload.length) return out;
+      lastErr = new Error('引擎返回条数不匹配');
+    } catch (err) {
+      lastErr = err;
+      logError(engine, payload, err);
+      const msg = String((err && err.message) || '');
+      // 认证/余额问题是确定的失败，重试和拆包都救不回来，立刻让位给备用引擎
+      if (engine === 'llm' && FATAL_LLM.test(msg)) {
+        llmBlockedUntil = Date.now() + 5 * 60 * 1000;
+        throw err;
+      }
+      if (/429|5\d\d|too many|rate/i.test(msg)) noteThrottle();
+    }
+    if (attempt === 0) await new Promise((r) => setTimeout(r, 260 + Math.random() * 340));
+  }
+  if (payload.length > 1 && depth < 2) {
+    const mid = Math.ceil(payload.length / 2);
+    const left = await callWithRetry(engine, payload.slice(0, mid), to, settings, depth + 1);
+    const right = await callWithRetry(engine, payload.slice(mid), to, settings, depth + 1);
+    return left.concat(right);
+  }
+  throw lastErr || new Error('翻译失败');
 }
 
 async function translateTexts(texts, rawSettings) {
@@ -309,8 +377,10 @@ async function translateTexts(texts, rawSettings) {
   let lastError = null;
 
   if (missing.length) {
-    const groups = groupIndices(missing, texts, 1600, 8);
-    const chain = buildChain(engine);
+    // 免费端点单次能吃 30 段，批量发包能把整页耗时压到几秒；AI 引擎仍按小批，省 token 也更稳
+    const isLLM = engine === 'llm';
+    const groups = groupIndices(missing, texts, isLLM ? 1600 : 6000, isLLM ? 8 : 24);
+    const chain = buildChain(engine, { skipLLM: Date.now() < llmBlockedUntil });
     let cursor = 0;
 
     const worker = async () => {
@@ -320,7 +390,7 @@ async function translateTexts(texts, rawSettings) {
         let ok = false;
         for (const candidate of chain) {
           try {
-            const out = await callEngine(candidate, payload, to, settings);
+            const out = await callWithRetry(candidate, payload, to, settings);
             if (!Array.isArray(out) || out.length !== payload.length) throw new Error('引擎返回条数不匹配');
             group.forEach((idx, k) => {
               const value = String(out[k] == null ? '' : out[k]);
@@ -345,15 +415,19 @@ async function translateTexts(texts, rawSettings) {
       }
     };
 
-    const parallel = Math.min(2, groups.length);
+    const parallel = Math.min(isLLM ? 2 : 4, groups.length);
     await Promise.all(Array.from({ length: parallel }, worker));
   }
 
   const failed = results.some((r) => !r);
+  const fellBack = usedEngine !== engine;
   return {
     results,
     engine: usedEngine,
-    error: failed && lastError ? String(lastError.message || lastError) : null
+    error: failed && lastError ? String(lastError.message || lastError) : null,
+    fellBack,
+    // 降级时把首选引擎的失败原因带回去，界面上要说清楚为什么换了引擎
+    chainNote: fellBack && lastError ? String(lastError.message || lastError) : null
   };
 }
 
@@ -366,7 +440,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       switch (msg && msg.type) {
         case 'translate': {
           const r = await translateTexts(msg.texts || [], msg.settings);
-          sendResponse({ ok: true, results: r.results, engine: r.engine, error: r.error });
+          sendResponse({
+            ok: true,
+            results: r.results,
+            engine: r.engine,
+            error: r.error,
+            fellBack: r.fellBack,
+            chainNote: r.chainNote
+          });
           break;
         }
         case 'test-engine': {
@@ -377,6 +458,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             engine: r.engine,
             error: r.error || (r.results[0] ? null : '引擎无返回内容')
           });
+          break;
+        }
+        case 'engine-log': {
+          sendResponse({ ok: true, list: recentErrors.slice(-40) });
           break;
         }
         case 'clear-cache': {
