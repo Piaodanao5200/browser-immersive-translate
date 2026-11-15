@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const EXT = 'D:/浏览器翻译插件';
+const EXT = path.resolve(import.meta.dirname, '..');
 const PORT = 9600 + Math.floor(Math.random() * 300);
 const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
 const URL_ = process.argv[2] || 'https://ai.google/sustainability/';

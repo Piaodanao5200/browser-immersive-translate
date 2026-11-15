@@ -1,9 +1,11 @@
 """生成扩展图标：蓝色渐变圆角方块 + 白色「译」字"""
+import os
+
 from PIL import Image, ImageDraw, ImageFont
 
 SIZES = [16, 32, 48, 128]
 FONT = "C:/Windows/Fonts/msyhbd.ttc"
-OUT = "D:/浏览器翻译插件/icons"
+OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "icons")
 
 
 def lerp(a, b, t):

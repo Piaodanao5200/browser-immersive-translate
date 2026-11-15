@@ -7,11 +7,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const EXT_DIR = 'D:/浏览器翻译插件';
+const EXT_DIR = path.resolve(import.meta.dirname, '..');
 const PORT = 9333;
 const DEMO = 'http://127.0.0.1:8765/test/demo.html';
 const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
-const OUT = 'D:/浏览器翻译插件/test';
+const OUT = path.resolve(import.meta.dirname, '..', 'test');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

@@ -1,4 +1,4 @@
-import ctypes, time, sys
+import ctypes, time, sys, os
 from ctypes import wintypes
 from PIL import ImageGrab
 try: ctypes.windll.shcore.SetProcessDpiAwareness(2)
@@ -35,7 +35,7 @@ u32.SetForegroundWindow(h); time.sleep(0.6)
 VK_A, VK_CTRL, VK_END = 0x41, 0x11, 0x23
 u32.keybd_event(VK_CTRL,0,0,0); u32.keybd_event(VK_A,0,0,0)
 u32.keybd_event(VK_A,0,KEYUP,0); u32.keybd_event(VK_CTRL,0,KEYUP,0); time.sleep(0.2)
-type_text('D://浏览器翻译插件')
+type_text(os.path.dirname(os.path.dirname(os.path.abspath(__file__))).replace('\\', '/'))
 time.sleep(0.5)
 ImageGrab.grab().save('test/shot-typed.png')
 print('已输入路径')

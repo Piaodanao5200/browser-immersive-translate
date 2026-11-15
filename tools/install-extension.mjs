@@ -6,7 +6,7 @@ import { spawn, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const EXT_DIR = 'D:\\浏览器翻译插件';
+const EXT_DIR = path.resolve(import.meta.dirname, '..');
 const EXT_ID = 'ehnnohlfcnokpmmmncebjajghkpakhpe';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

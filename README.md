@@ -62,12 +62,18 @@ ego 的扩展页是精简版，**没有「开发者模式」开关，也没有�
 只能靠启动参数加载：
 
 ```
-ego.exe --load-extension="D:\浏览器翻译插件"
+ego.exe --load-extension="D:\WorkBuddy\浏览器翻译插件"
 ```
 
-所以本机已经把这个参数写进了 ego 的桌面和开始菜单快捷方式（原值备份在 `tools/lnk-backup.json`），
-**双击桌面的 ego 图标就等于带扩展启动**，不需要额外操作。
-如果以后重装了 ego 或新建了快捷方式，重新跑一次 `python tools/patch_ego_lnk.py` 即可。
+所以本机把这个参数写进了 ego 的快捷方式（原值备份在 `tools/lnk-backup.json`）：
+
+- 桌面和开始菜单里的 **`ego (lite) 带翻译`** —— 普通权限就能写，双击即带扩展启动；
+- 原来的 `ego (lite)` 图标属于系统级快捷方式，改它需要管理员权限：
+  右键 `tools/fix_ego_lnk_admin.bat` → 以管理员身份运行一次即可。
+
+项目换目录后（例如从 `D:\浏览器翻译插件` 挪到 `D:\WorkBuddy\浏览器翻译插件`），
+重新跑一次 `python tools/patch_ego_lnk.py` 就会把参数指向新位置；
+`tools/启动ego带翻译.cmd` 用 `%~dp0..` 取路径，换到哪都能用。
 
 ## 二、使用
 

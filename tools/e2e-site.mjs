@@ -10,7 +10,8 @@ const url = process.argv[2];
 const waitSec = Number(process.argv[3] || 12);
 const PORT = 9555;
 const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
-const OUT = 'D:/浏览器翻译插件/test';
+const EXT_ROOT = path.resolve(import.meta.dirname, '..');
+const OUT = path.resolve(import.meta.dirname, '..', 'test');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function waitFor(fn, timeout = 25000) {
@@ -66,8 +67,8 @@ const browser = spawn(
   [
     `--remote-debugging-port=${PORT}`,
     `--user-data-dir=${userDir}`,
-    '--load-extension=D:/浏览器翻译插件',
-    '--disable-extensions-except=D:/浏览器翻译插件',
+    `--load-extension=${EXT_ROOT}`,
+    `--disable-extensions-except=${EXT_ROOT}`,
     '--disable-sync',
     '--disable-features=msEdgeIdentityFeature,msSyncConsent',
     '--no-first-run',

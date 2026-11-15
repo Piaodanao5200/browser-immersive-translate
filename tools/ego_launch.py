@@ -1,6 +1,6 @@
 import subprocess, time, os, sys
 EGO = r"C:/Program Files/Citro Labs/ego lite/Application/ego.exe"
-EXT = r"D:/浏览器翻译插件"
+EXT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 先关闭
 subprocess.run(['taskkill','/IM','ego.exe'], capture_output=True)
 time.sleep(6)

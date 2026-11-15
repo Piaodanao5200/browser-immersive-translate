@@ -4,8 +4,8 @@ import subprocess
 
 BS = chr(92)  # 反斜杠
 EGO = f"C:{BS}Program Files{BS}Citro Labs{BS}ego lite{BS}Application{BS}ego.exe"
-EXT = f"D:{BS}浏览器翻译插件"
-TOOLS = f"D:{BS}浏览器翻译插件{BS}tools"
+EXT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TOOLS = os.path.dirname(os.path.abspath(__file__))
 
 
 def make_cmd():

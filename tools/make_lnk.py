@@ -4,8 +4,8 @@ import win32com.client
 
 BS = chr(92)
 EGO = f"C:{BS}Program Files{BS}Citro Labs{BS}ego lite{BS}Application{BS}ego.exe"
-EXT = f"D:{BS}浏览器翻译插件"
-LNK = f"D:{BS}浏览器翻译插件{BS}tools{BS}ego 带翻译.lnk"
+EXT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LNK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ego 带翻译.lnk")
 
 shell = win32com.client.Dispatch("WScript.Shell")
 sc = shell.CreateShortCut(LNK)

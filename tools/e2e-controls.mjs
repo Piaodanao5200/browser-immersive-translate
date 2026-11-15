@@ -8,11 +8,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
-const EXT_DIR = 'D:/浏览器翻译插件';
+const EXT_DIR = path.resolve(import.meta.dirname, '..');
 const PORT = 9577;
 const WEB = 8767;
 const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
-const OUT = 'D:/浏览器翻译插件/test';
+const OUT = path.resolve(import.meta.dirname, '..', 'test');
 const DEMO = `http://127.0.0.1:${WEB}/demo.html`;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
