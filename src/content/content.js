@@ -25,6 +25,13 @@
   let stat = { total: 0, done: 0, failed: 0 };
   let walkStats = { visited: 0, units: 0, hitLimit: false, hitVisit: false };
   let failedSamples = [];
+  /* 没翻出来的单元：全部跑完后自动再试几轮，仍然不行才提示 */
+  let failedUnits = new Set();
+  let autoRetryRound = 0;
+  let lastRetryAt = 0;
+  let forceNext = false;
+  const AUTO_RETRY_MAX = 4;
+  const AUTO_RETRY_DELAY = [700, 2200, 6000, 14000];
   let fallbackNoticed = false;
   let lastCollect = {};
 
@@ -700,6 +707,17 @@
         swallowClick = false;
         return;
       }
+      // 还有没翻出来的段落时，按钮就是「重试」，别一点就把整页还原了
+      if (failedUnits.size && !pending.length && !activeChunks) {
+        autoRetryRound = 0;
+        forceNext = true; // 用户亲手点的重试：别受后台熔断窗口限制
+        const n = retryAllFailed();
+        if (n) {
+          toast.show('正在重试 ' + n + ' 段…', '', 0);
+          setState('busy');
+          return;
+        }
+      }
       toggle();
     }
 
@@ -885,14 +903,30 @@
     finishTimer = setTimeout(() => {
       if (pending.length || activeChunks) return;
       sweepDuplicates();
-      const ok = stat.total - stat.failed;
       if (stat.total === 0) return;
-      if (stat.failed && stat.failed === stat.total) {
+
+      const bad = failedParts();
+      const ok = stat.total - bad;
+
+      // 还有没翻出来的：先自己再试几轮（限流、瞬时 5xx、网络抖一下都靠它自愈），
+      // 页面上不出现任何红字，用户该看到的是译文而不是报错。
+      if (bad && !contextDead && autoRetryRound < AUTO_RETRY_MAX) {
+        const delay = AUTO_RETRY_DELAY[Math.min(autoRetryRound, AUTO_RETRY_DELAY.length - 1)];
+        autoRetryRound++;
+        toast.show('还有 ' + bad + ' 段没翻出来，正在自动重试…', '', 0);
+        fab.setState('busy');
+        setTimeout(() => {
+          if (enabled && !pending.length && !activeChunks) retryAllFailed();
+        }, delay);
+        return;
+      }
+
+      if (bad && bad === stat.total) {
         fab.setState('error');
-        toast.show('翻译失败：' + (lastError || '请检查网络或引擎配置'), 'err', 6000);
-      } else if (stat.failed) {
-        fab.setState('on');
-        toast.show('已翻译 ' + ok + ' 段，' + stat.failed + ' 段失败', 'err', 5000);
+        toast.show('翻译失败：' + (lastError || '请检查网络或引擎配置'), 'err', 7000);
+      } else if (bad) {
+        fab.setState('error');
+        toast.show('已翻译 ' + ok + ' 段 · ' + bad + ' 段没翻出来，点右侧按钮重试', 'err', 6000);
       } else {
         fab.setState('on');
         toast.show('已翻译 ' + ok + ' 段 · Alt+T 还原', 'ok', 2400);
@@ -900,31 +934,71 @@
     }, 400);
   }
 
+  /** 当前仍然失败的段数（按 part 计，和进度里的数字口径一致） */
+  function failedParts() {
+    let n = 0;
+    for (const u of failedUnits) {
+      for (const p of u.parts) if (p.state === 'error') n++;
+    }
+    return n;
+  }
+
   let lastError = null;
+  /** 扩展被重新加载过：内容脚本成了孤儿，只能刷新页面 */
+  let contextDead = false;
+
+  /**
+   * 和后台通信。MV3 的 service worker 会休眠，刚唤醒那一下 sendMessage 偶尔直接失败
+   * （"message port closed"）——以前一个分段失败就整组标红，整页前半截就这么废了。
+   * 这里对这种瞬时失败补一次；扩展真的被重新加载过则记住，别再无谓重试。
+   */
+  async function askBackground(texts, force) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (contextDead) return { ok: false, error: '扩展已更新，请刷新页面（F5）后继续' };
+      try {
+        const res = await chrome.runtime.sendMessage({ type: 'translate', texts, settings: pickSettings(), force });
+        if (res == null) {
+          // 后台没给回应（SW 正在重启）：等一下再来一次
+          if (attempt === 0) {
+            await new Promise((r) => setTimeout(r, 420));
+            continue;
+          }
+          return { ok: false, error: '后台没有响应，稍后自动重试' };
+        }
+        return res;
+      } catch (e) {
+        const msg = String((e && e.message) || e);
+        if (/context invalidated|Extension context/i.test(msg)) {
+          contextDead = true;
+          return { ok: false, error: '扩展已更新，请刷新页面（F5）后继续' };
+        }
+        if (attempt === 0) {
+          await new Promise((r) => setTimeout(r, 420));
+          continue;
+        }
+        return { ok: false, error: '无法连接后台服务，稍后自动重试' };
+      }
+    }
+    return { ok: false, error: '翻译请求失败' };
+  }
 
   async function runChunk(chunk) {
     const rid = runId;
     const texts = chunk.map((c) => c.part.text);
-    let res = null;
-    try {
-      res = await chrome.runtime.sendMessage({ type: 'translate', texts, settings: pickSettings() });
-    } catch (e) {
-      res = { ok: false, error: '无法连接后台服务，请刷新页面重试' };
-    }
+    const force = forceNext;
+    forceNext = false;
+    const res = await askBackground(texts, force);
     if (rid !== runId || !enabled) return;
 
     const ok = !!(res && res.ok);
     if (res && res.error) lastError = res.error;
 
-    // AI 引擎挂了、已经自动换引擎：提示一次，别让用户以为「翻译坏了」
+    // 首选引擎挂了、已经自动换引擎：提示一次，别让用户以为「翻译坏了」
     if (res && res.fellBack && !fallbackNoticed) {
       fallbackNoticed = true;
-      toast.show(
-        'AI 引擎不可用，已自动改用' + (engineName(res.engine) || '备用引擎') +
-          (res.chainNote ? '：' + res.chainNote : ''),
-        'err',
-        6500
-      );
+      const from = engineName(settings.engine) || '首选引擎';
+      const to = engineName(res.engine) || '备用引擎';
+      toast.show(from + ' 不可用，已自动改用' + to + (res.chainNote ? '：' + res.chainNote : ''), 'err', 6500);
     }
 
     chunk.forEach((c, i) => {
@@ -974,10 +1048,16 @@
 
     // 属性型：直接写回属性，没有节点可操作
     if (unit.kind === 'attr') {
-      if (okText && worthShowing(okText, unit.orig)) applyAttr(unit, okText);
+      if (okText && worthShowing(okText, unit.orig)) {
+        applyAttr(unit, okText);
+        failedUnits.delete(unit);
+      } else if (failed) {
+        failedUnits.add(unit);
+      }
       return;
     }
 
+    if (failed) failedUnits.add(unit);
     if (!unit.node || !unit.node.isConnected) return;
     const base = unit.kind === 'inline' ? 'st-tr-inline' : 'st-tr';
 
@@ -997,16 +1077,22 @@
     }
 
     if (failed) {
-      unit.node.className = base + ' st-error';
-      unit.node.textContent = (okText ? okText + unit.sep : '') + '⚠ 部分内容翻译失败，点击重试';
-      unit.node.onclick = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        retryUnit(unit);
-      };
+      // 失败时不往正文里塞「翻译失败」的大字：原文还在，用户照样能读。
+      // 单元挂在 failedUnits 里，等自动重试轮次；重试成功再补上译文。
+      failedUnits.add(unit);
+      if (okText) {
+        // 长段落只挂了其中一段：先把翻好的部分显示出来，剩下的重试补齐
+        unit.node.className = base;
+        unit.node.textContent = okText;
+      } else {
+        unit.node.className = base + ' st-error st-failed';
+        unit.node.textContent = '';
+      }
+      unit.node.onclick = null;
       return;
     }
 
+    failedUnits.delete(unit);
     unit.node.className = base;
     unit.node.textContent = okText;
     unit.node.onclick = null;
@@ -1051,6 +1137,42 @@
     }
   }
 
+  /** 把所有失败的段重新排队（自动重试和「点按钮重试」共用） */
+  function retryAllFailed() {
+    if (!enabled) return 0;
+    const again = [];
+    for (const unit of [...failedUnits]) {
+      if (!unit.el || !unit.el.isConnected) {
+        failedUnits.delete(unit);
+        continue;
+      }
+      let any = false;
+      for (const p of unit.parts) {
+        if (p.state === 'error') {
+          p.state = 'pending';
+          p.tr = '';
+          p.err = null;
+          again.push({ unit, part: p });
+          any = true;
+        }
+      }
+      if (!any) failedUnits.delete(unit);
+      else if (unit.node) {
+        const base = unit.kind === 'inline' ? 'st-tr-inline' : 'st-tr';
+        unit.node.className = base + ' st-loading';
+        unit.node.innerHTML = '<span class="st-dots"><i></i><i></i><i></i></span>';
+        unit.node.onclick = null;
+      }
+    }
+    if (!again.length) {
+      stat.failed = 0;
+      return 0;
+    }
+    pending = again.concat(pending);
+    pump();
+    return again.length;
+  }
+
   function retryUnit(unit) {
     if (!enabled) return;
     const again = [];
@@ -1058,6 +1180,7 @@
       if (p.state === 'error') {
         p.state = 'pending';
         p.tr = '';
+        p.err = null;
         again.push({ unit, part: p });
       }
     }
@@ -1075,6 +1198,7 @@
 
   function updateToast() {
     if (!enabled || !stat.total) return;
+    stat.failed = failedParts();
     const left = stat.total - stat.done;
     if (left <= 0) return;
     toast.show('翻译中 ' + stat.done + ' / ' + stat.total, '', 0);
@@ -1095,6 +1219,8 @@
     stat = { total: 0, done: 0, failed: 0 };
     lastError = null;
     failedSamples = [];
+    failedUnits = new Set();
+    autoRetryRound = 0;
     fallbackNoticed = false;
 
     document.documentElement.setAttribute('data-st-enabled', '1');
@@ -1152,6 +1278,8 @@
     pending = [];
     activeChunks = 0;
     stat = { total: 0, done: 0, failed: 0 };
+    failedUnits = new Set();
+    autoRetryRound = 0;
     document.documentElement.removeAttribute('data-st-enabled');
     stopObserver();
     document.querySelectorAll('[' + TR_ATTR + ']').forEach((n) => n.remove());
@@ -1201,6 +1329,13 @@
       return;
     }
     lastRescan = now;
+
+    // 之前失败过一批：用户回来滚动/切标签页时顺手再试一次（网络恢复多半就在这时候）
+    if (failedUnits.size && !pending.length && !activeChunks && now - lastRetryAt > 15000) {
+      lastRetryAt = now;
+      if (retryAllFailed()) return;
+    }
+
     let units = [];
     try {
       units = collectAll(document.body || document.documentElement);
@@ -1254,6 +1389,7 @@
     document.addEventListener('click', onInteract, true);
     document.addEventListener('keydown', onInteract, true);
     document.addEventListener('visibilitychange', onVisibleChange);
+    window.addEventListener('online', onOnline);
   }
 
   function onScroll() {
@@ -1273,6 +1409,17 @@
     if (document.visibilityState === 'visible') scheduleRescan(600);
   }
 
+  /** 断网恢复：之前没翻出来的立刻再试一次，不用等用户去点按钮 */
+  function onOnline() {
+    if (!enabled) return;
+    if (!failedUnits.size || pending.length || activeChunks) return;
+    forceNext = true;
+    autoRetryRound = 0;
+    lastRetryAt = Date.now();
+    const n = retryAllFailed();
+    if (n) toast.show('网络已恢复，重新翻译 ' + n + ' 段…', '', 0);
+  }
+
   function stopObserver() {
     if (observer) {
       observer.disconnect();
@@ -1287,6 +1434,7 @@
     document.removeEventListener('click', onInteract, true);
     document.removeEventListener('keydown', onInteract, true);
     document.removeEventListener('visibilitychange', onVisibleChange);
+    window.removeEventListener('online', onOnline);
   }
 
   /** 开翻之后的几次兜底补扫：异步渲染、轮播自动切页、懒加载都能收进来 */

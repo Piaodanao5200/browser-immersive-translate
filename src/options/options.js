@@ -166,6 +166,38 @@
       refreshCache();
       flashSaved();
     });
+
+    $('showLog').addEventListener('click', showEngineLog);
+  }
+
+  /** 引擎日志：翻不出来时用户能直接把这段发过来，比「没翻译」三个字有用得多 */
+  async function showEngineLog() {
+    const box = $('logBox');
+    const info = $('logInfo');
+    let res = null;
+    try {
+      res = await chrome.runtime.sendMessage({ type: 'engine-log' });
+    } catch (e) {
+      res = null;
+    }
+    const list = (res && res.list) || [];
+    box.hidden = false;
+    if (!list.length) {
+      box.textContent = '暂时没有错误记录。';
+      info.textContent = '0 条';
+      return;
+    }
+    const now = Date.now();
+    box.textContent = list
+      .slice()
+      .reverse()
+      .map((e) => {
+        const ago = Math.max(0, Math.round((now - e.t) / 1000));
+        const when = ago < 60 ? ago + ' 秒前' : Math.round(ago / 60) + ' 分钟前';
+        return `[${when}] ${e.engine} · ${e.n} 段 / ${e.chars} 字\n${e.msg}`;
+      })
+      .join('\n\n');
+    info.textContent = list.length + ' 条';
   }
 
   init();

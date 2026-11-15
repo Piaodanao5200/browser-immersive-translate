@@ -56,15 +56,26 @@ async function flushCache() {
 /* 引擎实现                                                            */
 /* ------------------------------------------------------------------ */
 
+/** 带超时的 fetch：接口挂住时不能让整页一直转圈 */
+async function tfetch(url, init, ms) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ms || 20000);
+  try {
+    return await fetch(url, Object.assign({}, init, { signal: ctl.signal }));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** 微软 Edge 网页翻译免鉴权端点（2026 可用，需浏览器 UA） */
 async function engineMicrosoft(texts, to) {
   const params = new URLSearchParams({ to: langCode(to, 'microsoft'), 'api-version': '3.0' });
   const url = 'https://edge.microsoft.com/translate/translatetext?' + params.toString();
-  const res = await fetch(url, {
+  const res = await tfetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(texts)
-  });
+  }, 20000);
   if (!res.ok) throw new Error('微软接口 HTTP ' + res.status);
   const data = await res.json();
   if (!Array.isArray(data) || data.length !== texts.length) throw new Error('微软接口返回结构异常');
@@ -84,7 +95,7 @@ async function engineGoogle(texts, to) {
       encodeURIComponent(tl) +
       '&dt=t&q=' +
       encodeURIComponent(text);
-    const res = await fetch(url);
+    const res = await tfetch(url, null, 15000);
     if (!res.ok) throw new Error('Google 接口 HTTP ' + res.status);
     const data = await res.json();
     const seg = (data && data[0]) || [];
@@ -118,7 +129,7 @@ async function engineMyMemory(texts, to) {
         encodeURIComponent(piece) +
         '&langpair=' +
         encodeURIComponent('en|' + tl);
-      const res = await fetch(url);
+      const res = await tfetch(url, null, 15000);
       if (!res.ok) throw new Error('MyMemory 接口 HTTP ' + res.status);
       const data = await res.json();
       const t = data && data.responseData && data.responseData.translatedText;
@@ -171,14 +182,14 @@ async function engineLLM(texts, to, settings) {
   }
 
   const url = String(llm.baseUrl).replace(/\/+$/, '') + '/chat/completions';
-  const res = await fetch(url, {
+  const res = await tfetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: 'Bearer ' + llm.apiKey
     },
     body: JSON.stringify(body)
-  });
+  }, 45000);
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
     throw new Error(describeLLMError(res.status, detail));
@@ -321,14 +332,39 @@ async function waitCooldown() {
   if (wait > 0) await new Promise((r) => setTimeout(r, wait));
 }
 
+/**
+ * 熔断：引擎整体连不上（断网、代理拦截、DNS 挂了）时，
+ * 每个分段都老老实实重试 3 次再拆包，整页要转两分钟圈才出结果。
+ * 这里统计网络类失败，短时间内攒够次数就先停一会儿，直接失败交给界面重试。
+ */
+const NET_ERR = /failed to fetch|network|abort|timeout|超时|ERR_|connection|econn/i;
+let netFailAt = [];
+let offlineUntil = 0;
+
+function noteNetFail() {
+  const now = Date.now();
+  netFailAt = netFailAt.filter((t) => now - t < 60000);
+  netFailAt.push(now);
+  if (netFailAt.length >= 6) offlineUntil = now + 10000;
+}
+function noteNetOk() {
+  netFailAt = [];
+  offlineUntil = 0;
+}
+
 async function callWithRetry(engine, payload, to, settings, depth = 0) {
+  if (Date.now() < offlineUntil) throw new Error('翻译引擎暂时连不上，稍后会自动重试');
   let lastErr = null;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     await waitCooldown();
     try {
       const out = await callEngine(engine, payload, to, settings);
-      if (Array.isArray(out) && out.length === payload.length) return out;
-      lastErr = new Error('引擎返回条数不匹配');
+      if (!Array.isArray(out) || out.length !== payload.length) throw new Error('引擎返回条数不匹配');
+      // 返回了一堆空串＝这次其实没翻成（被限流、被拦、语言不支持都会这样）。
+      // 以前这里当成成功，整组就这样空着，也不会去试下一个引擎。
+      if (!out.some((x) => String(x == null ? '' : x).trim())) throw new Error('引擎返回空结果');
+      noteNetOk();
+      return out;
     } catch (err) {
       lastErr = err;
       logError(engine, payload, err);
@@ -338,11 +374,12 @@ async function callWithRetry(engine, payload, to, settings, depth = 0) {
         llmBlockedUntil = Date.now() + 5 * 60 * 1000;
         throw err;
       }
-      if (/429|5\d\d|too many|rate/i.test(msg)) noteThrottle();
+      if (NET_ERR.test(msg)) noteNetFail();
+      if (/429|5\d\d|too many|rate|abort|timeout|超时/i.test(msg)) noteThrottle();
     }
-    if (attempt === 0) await new Promise((r) => setTimeout(r, 260 + Math.random() * 340));
+    await new Promise((r) => setTimeout(r, 240 * (attempt + 1) + Math.random() * 320));
   }
-  if (payload.length > 1 && depth < 2) {
+  if (payload.length > 1 && depth < 3) {
     const mid = Math.ceil(payload.length / 2);
     const left = await callWithRetry(engine, payload.slice(0, mid), to, settings, depth + 1);
     const right = await callWithRetry(engine, payload.slice(mid), to, settings, depth + 1);
@@ -392,6 +429,31 @@ async function translateTexts(texts, rawSettings) {
           try {
             const out = await callWithRetry(candidate, payload, to, settings);
             if (!Array.isArray(out) || out.length !== payload.length) throw new Error('引擎返回条数不匹配');
+
+            // 整组里个别条目空着（常见于超长段或被单独限流）：单独再要一次，
+            // 别让这几十个字拖累整组都显示成「没翻出来」。
+            const blanks = [];
+            out.forEach((v, k) => {
+              if (!String(v == null ? '' : v).trim()) blanks.push(k);
+            });
+            if (blanks.length && blanks.length < out.length) {
+              try {
+                const again = await callWithRetry(
+                  candidate,
+                  blanks.map((k) => payload[k]),
+                  to,
+                  settings,
+                  1
+                );
+                blanks.forEach((k, j) => {
+                  const v = String(again[j] == null ? '' : again[j]);
+                  if (v) out[k] = v;
+                });
+              } catch (e) {
+                /* 补不回来就留空，内容脚本那边会再重试一轮 */
+              }
+            }
+
             group.forEach((idx, k) => {
               const value = String(out[k] == null ? '' : out[k]);
               results[idx] = value;
@@ -439,6 +501,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     try {
       switch (msg && msg.type) {
         case 'translate': {
+          // 用户手点的重试：清掉熔断和 AI 屏蔽窗口，立刻真打一次
+          if (msg.force) {
+            offlineUntil = 0;
+            netFailAt = [];
+            llmBlockedUntil = 0;
+            cooldownUntil = 0;
+          }
           const r = await translateTexts(msg.texts || [], msg.settings);
           sendResponse({
             ok: true,

@@ -74,6 +74,13 @@
   cursor: pointer;
 }
 
+/* 没翻出来的段：占位节点直接收起来。原文还在页面上，插一条红色大字只会更难看，
+   重试交给右下角按钮，成功后这里会自己补上译文。 */
+.st-tr.st-failed,
+.st-tr-inline.st-failed {
+  display: none !important;
+}
+
 /* 译文配色方案 */
 html[data-st-style='inherit'] .st-tr {
   color: inherit;

@@ -71,11 +71,64 @@ async function clickAt(c, x, y) {
   await c.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base });
 }
 
+/** 反复点悬浮按钮，直到 cond() 为真（合成点击偶尔会丢，不是产品问题） */
+async function clickUntil(cond, tries = 4) {
+  for (let i = 0; i < tries; i++) {
+    const now = await evalOn(page, FAB_INFO);
+    if (!now) return false;
+    await clickAt(page, now.x, now.y);
+    await sleep(900);
+    try {
+      if (await cond()) return true;
+    } catch (e) {
+      /* 继续试 */
+    }
+  }
+  return false;
+}
+
 const results = [];
-const check = (name, ok, detail) => {
-  results.push({ name, ok });
+const check = (name, ok, detail) => {  results.push({ name, ok });
   console.log((ok ? '  PASS  ' : '  FAIL  ') + name + (detail ? ' — ' + detail : ''));
 };
+
+/** 扩展 ID：从扩展 service worker 的 URL 里取（同一目录在这台机器上固定） */
+let extIdCache = null;
+async function getExtId() {
+  if (extIdCache) return extIdCache;
+  const t = await waitFor(async () => {
+    const list = await targets();
+    const ours = list.find((x) => x.url.includes('/src/background.js'));
+    if (ours) return ours;
+    const anyExt = list.filter((x) => x.url.startsWith('chrome-extension://'));
+    if (!anyExt.length) return null;
+    throw new Error('没找到本扩展的 target: ' + anyExt.map((x) => x.url).join(' | '));
+  }, 20000);
+  extIdCache = new URL(t.url).host;
+  return extIdCache;
+}
+
+/** 打开一个扩展页面当控制端（扩展页面不会休眠，比 service worker 稳） */
+async function openCtrl(id) {
+  const url = `chrome-extension://${id}/src/options/options.html`;
+  const ver = await (await fetch(`http://127.0.0.1:${PORT}/json/version`)).json();
+  const bc = await cdp(ver.webSocketDebuggerUrl);
+  const { targetId } = await bc.send('Target.createTarget', { url });
+  bc.ws.close();
+  const t = await waitFor(async () => (await targets()).find((x) => x.id === targetId), 15000);
+  const c = await cdp(t.webSocketDebuggerUrl);
+  await c.send('Page.enable');
+  await c.send('Runtime.enable');
+  console.log('   控制端:', t.url, '→', await evalOn(c, 'location.href').catch((e) => 'eval 失败: ' + e.message));
+  await waitFor(async () => {
+    try {
+      return await evalOn(c, `!!(window.chrome && chrome.storage && chrome.storage.local)`);
+    } catch (e) {
+      return null;
+    }
+  }, 15000);
+  return c;
+}
 
 /* 静态服务 */
 const server = http.createServer((req, res) => {
@@ -143,17 +196,23 @@ try {
   check('初始状态为「翻译此页」', fab.label === '翻译此页' && fab.ico === '译', fab.label + '/' + fab.ico);
   check('按钮有蓝色渐变底', /gradient/.test(fab.bg), fab.bg);
 
-  await clickAt(page, fab.x, fab.y);
-  await waitFor(async () => (await evalOn(page, FAB_INFO)).tr > 0, 12000);
-  await waitFor(async () => (await evalOn(page, FAB_INFO)).cls.includes('on'), 25000, 400);
+  // CDP 合成的鼠标事件偶尔会被丢掉（按下与抬起之间必须落在同一帧），
+  // 所以点几次直到状态真的变了，再断言。
+  await clickUntil(async () => {
+    const now = await evalOn(page, FAB_INFO);
+    return now.tr > 0;
+  });
+  await waitFor(async () => (await evalOn(page, FAB_INFO)).cls.includes('on'), 30000, 400);
   const on = await evalOn(page, FAB_INFO);
   check('点一下开始翻译，按钮进入「显示原文」态', on.cls.includes('on') && on.label === '显示原文', `tr=${on.tr}`);
 
   const shot1 = await page.send('Page.captureScreenshot', { format: 'png' });
   fs.writeFileSync(path.join(OUT, 'shot-fab-on.png'), Buffer.from(shot1.data, 'base64'));
 
-  await clickAt(page, on.x, on.y);
-  await waitFor(async () => (await evalOn(page, FAB_INFO)).tr === 0, 8000);
+  await clickUntil(async () => {
+    const now = await evalOn(page, FAB_INFO);
+    return now.tr === 0;
+  });
   const off = await evalOn(page, FAB_INFO);
   check('再点一下还原原文', off.tr === 0 && off.label === '翻译此页', `tr=${off.tr} label=${off.label}`);
 
@@ -173,11 +232,21 @@ try {
   await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 120, y: 300, button: 'left', clickCount: 1 });
   await sleep(700);
   const moved = await evalOn(page, FAB_INFO);
-  const swT = await waitFor(async () =>
-    (await targets()).find((t) => t.type === 'service_worker' && t.url.includes('/src/background.js'))
-  );
-  const sw = await cdp(swT.webSocketDebuggerUrl);
-  const pos = await evalOn(sw, `(async () => (await chrome.storage.local.get('fabPos')).fabPos || null)()`);
+
+  // 控制端用扩展页面而不是 service worker：MV3 的 SW 会休眠，
+  // 休眠后 CDP target 直接消失，用它会随机超时。
+  const extId = await getExtId();
+  const ctrl = await openCtrl(extId);
+  await waitFor(async () => {
+    try {
+      return await evalOn(ctrl, '1+1');
+    } catch (e) {
+      return null;
+    }
+  }, 15000);
+  const ctrlEval = (expr) => evalOn(ctrl, expr);
+
+  const pos = await ctrlEval(`(async () => (await chrome.storage.local.get('fabPos')).fabPos || null)()`);
   check(
     '拖动后位置生效并落盘',
     moved.left < 250 && moved.top < 420 && !!pos,
@@ -185,13 +254,12 @@ try {
   );
   check('拖动不应误触发翻译', moved.tr === 0, `tr=${moved.tr}`);
 
-  await evalOn(sw, `chrome.storage.sync.set({ showFab: false })`);
+  await ctrlEval(`chrome.storage.sync.set({ showFab: false })`);
   await sleep(700);
   const hidden = await evalOn(page, FAB_INFO);
   check('设置页关闭开关后按钮隐藏', hidden.cls.includes('out'), hidden.cls);
-  await evalOn(sw, `chrome.storage.sync.set({ showFab: true })`);
+  await ctrlEval(`chrome.storage.sync.set({ showFab: true })`);
   await sleep(500);
-  sw.ws.close();
   const back = await evalOn(page, FAB_INFO);
   check('重新打开开关按钮恢复', !back.cls.includes('out'), back.cls);
 
@@ -199,6 +267,21 @@ try {
   fs.writeFileSync(path.join(OUT, 'shot-fab-idle.png'), Buffer.from(shot2.data, 'base64'));
 } catch (e) {
   check('流程未中断', false, e.message);
+  try {
+    const st = await evalOn(page, FAB_INFO);
+    const info = await evalOn(
+      page,
+      `({ tr: document.querySelectorAll('[data-st-tr]').length, units: document.querySelectorAll('[data-st-unit]').length, on: document.documentElement.getAttribute('data-st-enabled') })`
+    );
+    console.log('   失败现场:', JSON.stringify({ fab: st && { x: st.x, y: st.y, cls: st.cls, label: st.label }, ...info }));
+    if (st) {
+      const hit = await evalOn(
+        page,
+        `(() => { const e = document.elementFromPoint(${st.x}, ${st.y}); return e ? e.tagName + '.' + (e.id || '') : 'null'; })()`
+      );
+      console.log('   命中元素:', hit);
+    }
+  } catch (_) {}
 } finally {
   try {
     page && page.ws.close();

@@ -30,6 +30,8 @@ const DEFAULT_SITES = [
   ['tailwind', 'https://tailwindcss.com/docs/installation']
 ];
 
+const ENGINE = process.env.ENGINE || 'microsoft';
+const LLM_KEY = process.env.LLM_KEY || '';
 const ONLY = (process.env.ONLY || '').split(',').map((x) => x.trim()).filter(Boolean);
 const extras = process.argv.slice(2).map((u, i) => ['extra' + i, u]);
 const sites = (ONLY.length ? DEFAULT_SITES.filter(([n]) => ONLY.includes(n)) : DEFAULT_SITES).concat(extras);
@@ -160,14 +162,14 @@ try {
   );
   console.log('环境:', JSON.stringify(env));
 
-  // 固定成默认引擎，免得账号同步下来的设置影响测量
+  // 固定成指定引擎，免得账号同步下来的设置影响测量
   await ctrlEval(`(async () => {
-    const s = await chrome.storage.sync.get(null);
-    if (s.engine && s.engine !== 'microsoft') {
-      await chrome.storage.sync.set({ engine: 'microsoft', autoSites: [] });
-      return 'forced';
-    }
-    return 'as-is';
+    await chrome.storage.sync.set({
+      engine: ${JSON.stringify(ENGINE)},
+      autoSites: [],
+      llm: { baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-flash', apiKey: ${JSON.stringify(LLM_KEY)} }
+    });
+    return 'forced';
   })()`);
 
   for (const [name, url] of sites) {
@@ -293,6 +295,11 @@ try {
         12000
       );
 
+      rec.engineLog = await ctrlEval(`(async () => {
+        try { return (await chrome.runtime.sendMessage({ type: 'engine-log' })).list.slice(-12); }
+        catch (e) { return ['engine-log 失败: ' + String((e && e.message) || e)]; }
+      })()`);
+
       const shot = await page.send('Page.captureScreenshot', { format: 'png' });
       const file = path.join(OUT, 'audit-' + slug(name) + '.png');
       fs.writeFileSync(file, Buffer.from(shot.data, 'base64'));
@@ -319,6 +326,12 @@ try {
       if (rec.langSamples && rec.langSamples.length) {
         console.log('   判定为无需翻译的样例:');
         rec.langSamples.slice(0, 5).forEach((m) => console.log(`     - ${m.tag}.${m.cls} :: ${m.text}`));
+      }
+      if (rec.engineLog && rec.engineLog.length) {
+        console.log('   引擎错误日志:');
+        rec.engineLog.slice(-8).forEach((e) =>
+          console.log(`     - ${e.engine} n=${e.n} ${e.chars}字 :: ${e.msg}`)
+        );
       }
       if (rec.diagError) console.log('   诊断失败:', rec.diagError);
     } catch (e) {

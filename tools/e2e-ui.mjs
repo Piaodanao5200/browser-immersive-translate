@@ -107,6 +107,21 @@ try {
 
   const uiText = await evalOn(page, `({ sections: document.querySelectorAll('section').length, title: document.title })`);
   check('设置页正常渲染', uiText.sections >= 5, JSON.stringify(uiText));
+
+  // 诊断块：点一下能拿到引擎错误日志（排查「页面没翻出来」用）
+  const logUi = await evalOn(
+    page,
+    `(async () => {
+      const btn = document.getElementById('showLog');
+      if (!btn) return { ok: false };
+      btn.click();
+      await new Promise((r) => setTimeout(r, 600));
+      const box = document.getElementById('logBox');
+      return { ok: true, hidden: box.hidden, text: (box.textContent || '').slice(0, 80), info: document.getElementById('logInfo').textContent };
+    })()`
+  );
+  check('引擎日志面板可用', logUi.ok && !logUi.hidden, JSON.stringify(logUi));
+
   const shot1 = await page.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
   fs.writeFileSync(path.join(OUT, 'shot-options.png'), Buffer.from(shot1.data, 'base64'));
 
