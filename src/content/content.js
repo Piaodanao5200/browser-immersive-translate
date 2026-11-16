@@ -5,6 +5,34 @@
   if (window.__ST_CONTENT_LOADED__) return;
   window.__ST_CONTENT_LOADED__ = true;
 
+  // 自己是不是内嵌 frame（评论区、嵌入文档常在同源/跨域 iframe 里）
+  const IN_FRAME = (() => {
+    try {
+      return window.top !== window;
+    } catch (e) {
+      return true; // 跨域访问 top 会抛错，抛了就是子 frame
+    }
+  })();
+
+  // 播放器 / 验证码 / 广告 / 统计这类 frame 里没有可读正文，进去只会白耗性能
+  function skipThisFrame() {
+    if (!IN_FRAME) return false;
+    const h = location.hostname;
+    const p = location.pathname;
+    if (/^(www\.)?youtube(-nocookie)?\.com$/i.test(h) && /^\/(embed|live_embed)/i.test(p)) return true;
+    if (/(^|\.)player\.vimeo\.com$/i.test(h)) return true;
+    if (
+      /(^|\.)(recaptcha\.net|gstatic\.com|google\.com|doubleclick\.net|googlesyndication\.com|googleadservices\.com|google-analytics\.com|googletagmanager\.com|hotjar\.com|facebook\.com|stripe\.com|paypal\.com)$/i.test(
+        h
+      )
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  if (skipThisFrame()) return;
+
   const ST = window.ST;
   const { TR_ATTR, UNIT_ATTR } = { TR_ATTR: 'data-st-tr', UNIT_ATTR: 'data-st-unit' };
 
@@ -427,6 +455,7 @@
     }
 
     function show(text, kind, autoHideMs) {
+      if (IN_FRAME) return; // 子 frame 里不弹提示，整页只需要一条
       ensure();
       box.className = 't on' + (kind ? ' ' + kind : '');
       box.querySelector('.m').textContent = text;
@@ -616,6 +645,7 @@
       '@media print{.wrap{display:none!important}}';
 
     function ensure() {
+      if (IN_FRAME) return false; // 子 frame 里根本不建悬浮按钮
       if (host && host.isConnected) return true;
       if (!document.body && !document.documentElement) return false;
       host = document.createElement('div');
@@ -792,6 +822,7 @@
     }
 
     function setVisible(v) {
+      if (IN_FRAME) v = false; // 悬浮按钮只在主页面出现，iframe 里放一个会跟着框架乱飘
       shown = !!v;
       if (ensure()) render();
     }
@@ -1096,6 +1127,51 @@
     unit.node.className = base;
     unit.node.textContent = okText;
     unit.node.onclick = null;
+    clampIfClipped(unit);
+  }
+
+  /** 找出真把节点「从底部切掉」的祖先（overflow:hidden 且节点底部超出它） */
+  function clipAncestor(node) {
+    let p = node.parentElement;
+    for (let i = 0; i < 6 && p && p !== document.body; i++) {
+      const cs = getComputedStyle(p);
+      const cut = cs.overflowY === 'hidden' || cs.overflow === 'hidden';
+      if (cut) {
+        const r = p.getBoundingClientRect();
+        const nr = node.getBoundingClientRect();
+        if (nr.bottom <= r.bottom + 4) return null; // 没被切，别往上找了
+        if (nr.top >= r.top - 2) return p; // 从底部切掉一截
+      }
+      p = p.parentElement;
+    }
+    return null;
+  }
+
+  /**
+   * 固定高度的盒子（小组件标题、聊天气泡）塞不下多出来的一行，
+   * 硬插进去只会被裁成半个字，比不翻还难看。
+   * 遇到这种就把块撤掉，把译文挂到原文的 title 上：版式不动，鼠标停上去能看全文。
+   */
+  function clampIfClipped(unit) {
+    const node = unit.node;
+    if (!node || !unit.el || !node.isConnected) return;
+    if (unit.kind === 'inline' || unit.kind === 'attr') return;
+    const box = clipAncestor(node);
+    if (!box) return;
+    const nr = node.getBoundingClientRect();
+    const visible = box.getBoundingClientRect().bottom - nr.top;
+    if (nr.height <= 0 || visible >= nr.height * 0.75) return;
+
+    const tr = node.textContent || '';
+    const el = unit.el;
+    node.remove();
+    unit.node = null;
+    if (!tr || !el.setAttribute) return;
+    if (!el.hasAttribute('data-st-tip-orig')) {
+      el.setAttribute('data-st-tip-orig', el.getAttribute('title') || '');
+    }
+    el.setAttribute('data-st-tip', '1');
+    el.setAttribute('title', tr);
   }
 
   /** 全部翻完后统一扫一遍：同一区域里块级译文和内联译文重复的，删掉块级那一行 */
@@ -1213,6 +1289,7 @@
     if (enabled) return;
     if (!settings) settings = await ST.getSettings();
     enabled = true;
+    syncFrames();
     runId++;
     pending = [];
     activeChunks = 0;
@@ -1272,8 +1349,20 @@
     });
   }
 
+  /** 还原被改成 title 提示的译文（固定高度盒子里那些） */
+  function restoreTips() {
+    document.querySelectorAll('[data-st-tip]').forEach((el) => {
+      const orig = el.getAttribute('data-st-tip-orig') || '';
+      if (orig) el.setAttribute('title', orig);
+      else el.removeAttribute('title');
+      el.removeAttribute('data-st-tip');
+      el.removeAttribute('data-st-tip-orig');
+    });
+  }
+
   function disable() {
     enabled = false;
+    syncFrames();
     runId++;
     pending = [];
     activeChunks = 0;
@@ -1285,6 +1374,7 @@
     document.querySelectorAll('[' + TR_ATTR + ']').forEach((n) => n.remove());
     restoreAttrs();
     document.querySelectorAll('[' + UNIT_ATTR + ']').forEach((n) => n.removeAttribute(UNIT_ATTR));
+    restoreTips();
     toast.hide();
     bubble.hide();
     fab.setState('idle');
@@ -1297,7 +1387,18 @@
     return enabled;
   }
 
+  /** 主 frame 把开关状态推给同页面的其它 iframe（评论区、嵌入文档都在里面） */
+  function syncFrames() {
+    if (IN_FRAME) return; // 只有主 frame 发，否则各个 frame 互相推会打转
+    try {
+      chrome.runtime.sendMessage({ type: 'sync-enabled', enabled }, () => void chrome.runtime.lastError);
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
   function reportState() {
+    if (IN_FRAME) return; // 徽标只跟主 frame 的进度，别被 iframe 反复覆盖
     try {
       chrome.runtime.sendMessage({ type: 'page-state', enabled }, () => void chrome.runtime.lastError);
     } catch (e) {
@@ -1573,6 +1674,21 @@
     } catch (e) {
       settings = ST.mergeSettings({});
     }
+
+    // 子 frame：不自己判断该不该翻，问后台「这个标签页现在开着吗」。
+    // 评论框这类 iframe 往往在主页面开翻之后才加载，靠主 frame 广播会漏掉。
+    if (IN_FRAME) {
+      try {
+        chrome.runtime.sendMessage({ type: 'frame-ready' }, (res) => {
+          void chrome.runtime.lastError;
+          if (res && res.enabled && !enabled) enable();
+        });
+      } catch (e) {
+        /* ignore */
+      }
+      return;
+    }
+
     fab.setVisible(settings.showFab !== false);
     // 主动报一次状态：后台 service worker 可能已经休眠，这条消息能把它叫醒，
     // 弹窗/快捷键之后才能立刻接管。

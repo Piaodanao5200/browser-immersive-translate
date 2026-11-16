@@ -4,8 +4,8 @@
 页面右侧常有蓝色「译」悬浮按钮，点一下即译；也支持 `Alt + T` 快捷键、右键菜单、选中文字气泡翻译。
 **按钮、菜单项、输入框这些界面控件也会跟着翻**（原文保留，中文以小一号灰字跟在后面）。
 
-> 状态：v1.4.0，已在 Edge（Chromium 内核，与 Chrome 同一套 MV3 接口）实测通过。
-> 实测数据：8 个站点 1370 段 / 0 失败；断网重连后能自己把没翻出来的段落补齐。
+> 状态：v1.5.0，已在 Edge（Chromium 内核，与 Chrome 同一套 MV3 接口）实测通过。
+> 实测数据：8 个站点 1112 段 / 0 失败；断网重连后能自己把没翻出来的段落补齐；跨域 iframe（Disqus / Tolstoy 这类评论框）里的正文同样能翻。
 
 ![双语对照效果](docs/screenshot-page.jpg)
 
@@ -186,9 +186,12 @@ tools/
 
 ## 五、已知限制
 
-- **iframe 内的内容不翻译**（`all_frames: false`）。跨域 iframe 各站点权限模型复杂，先不做。
+- **iframe 已覆盖**：`all_frames: true`，评论区、嵌入文档这类跨域 iframe 会独立翻译；
+  播放器（YouTube / Vimeo 嵌入）、验证码、广告位、统计脚本的 frame 主动跳过，避免白耗请求。
+  只有 iframe 里 `about:blank` 的空壳不注入。
 - **canvas / 图片里的文字**不在 DOM 里，插件拿不到，无解。
-- 少数站点用极端的 `line-clamp`、`overflow: hidden` 或固定高度容器，译文可能被裁切。
+- 少数站点用固定高度 + `overflow: hidden` 的容器（小组件标题、聊天气泡），塞不下新的一行。
+  这种位置不再硬插译文，改为把中文挂到原文的 `title` 上：版式不动，鼠标停上去能看全文。
 - 极度动态的站点（每次滚动都重建整棵 DOM）会反复触发增量翻译，虽然有缓存兜底，但页面可能轻微抖动。
 - 长页面（例如 Stack Overflow 问答页 1400+ 段）整页翻完需要几十秒：首屏会先出译文，越往下越晚。
 - 免费接口有速率限制：并发开到 4 路以上会被整包拒绝，因此并发固定在 3 路。
@@ -222,6 +225,11 @@ node tools/e2e-retry.mjs "https://ai.google/sustainability/"
 # 多站点漏译巡检（默认 9 个站点，也可追加网址）
 node tools/audit-sites.mjs
 ONLY=blog-google,wikipedia node tools/audit-sites.mjs "https://example.com"
+
+# 逐帧探针：看清译文落在主页面还是 iframe 里、哪些 frame 一个字都没翻
+node tools/probe-frames.mjs "https://fitgirl-repacks.site/call-of-duty-modern-warfare-4/"
+# 想临时在页面里跑一段代码，加 EVAL 环境变量（主 frame 和每个 iframe 都会执行）
+EVAL='document.querySelectorAll("[data-st-tr]").length' node tools/probe-frames.mjs "https://github.com/microsoft/vscode"
 ```
 
 测试脚本用 CDP 直连，不依赖 Playwright；截图落在 `test/`。

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "字幕译 · 双语对照网页翻译",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "在原文下方插入译文，像双语字幕一样阅读外文网页。按 Alt+T 一键开关，支持划词翻译。",
   "minimum_chrome_version": "102",
   "permissions": ["storage", "scripting", "contextMenus"],
@@ -15,7 +15,7 @@
       "js": ["src/shared.js", "src/content/content.js"],
       "css": ["src/content/content.css"],
       "run_at": "document_idle",
-      "all_frames": false
+      "all_frames": true
     }
   ],
   "action": {

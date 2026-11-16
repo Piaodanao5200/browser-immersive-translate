@@ -12,6 +12,10 @@ const CACHE_MAX = 4000;
 let memCache = null;
 let flushTimer = null;
 
+/** 每个标签页的翻译开关状态；后加载的 iframe 靠它判断要不要跟着翻 */
+const tabEnabled = new Map();
+chrome.tabs.onRemoved.addListener((tabId) => tabEnabled.delete(tabId));
+
 async function loadCache() {
   if (memCache) return memCache;
   try {
@@ -175,9 +179,9 @@ async function engineLLM(texts, to, settings) {
     stream: false
   };
 
-  // DeepSeek V4 默认开启思考模式，翻译场景只会更慢更贵，显式关掉。
-  // 该字段只有 DeepSeek 认，其它厂商传了可能 400，所以按域名判断。
-  if (/deepseek\.com/i.test(llm.baseUrl)) {
+  // DeepSeek V4 / 智谱 GLM-4.5+ 默认开思考模式，翻译场景只会更慢更贵，显式关掉。
+  // 该字段只有这两家认，其它厂商传了可能 400，所以按域名判断。
+  if (/deepseek\.com|bigmodel\.cn|z\.ai/i.test(llm.baseUrl)) {
     body.thinking = { type: 'disabled' };
   }
 
@@ -544,10 +548,42 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, size: c.size });
           break;
         }
+        case 'sync-enabled': {
+          // 某个 frame 里点了开关（悬浮按钮 / 右键 / 快捷键落地在主页），
+          // 把状态同步给同标签页的其它 frame，评论区这类 iframe 才不会留着译文。
+          const tabId = sender.tab && sender.tab.id;
+          if (typeof tabId === 'number') {
+            try {
+              await chrome.tabs.sendMessage(tabId, { type: 'set-enabled', enabled: !!msg.enabled });
+            } catch (e) {
+              /* 没有其它 frame，或标签页已关闭 */
+            }
+          }
+          sendResponse({ ok: true });
+          break;
+        }
+        case 'frame-ready': {
+          // 子 frame 刚注入：告诉它当前标签页是不是开着翻译
+          const tabId = sender.tab && sender.tab.id;
+          let on = typeof tabId === 'number' && tabEnabled.get(tabId) === true;
+          if (typeof tabId === 'number' && !tabEnabled.has(tabId)) {
+            // 后台重启过、状态表空了：直接问主 frame
+            try {
+              const st = await chrome.tabs.sendMessage(tabId, { type: 'state' }, { frameId: 0 });
+              on = !!(st && st.enabled);
+              tabEnabled.set(tabId, on);
+            } catch (e) {
+              /* 主 frame 还没就绪 */
+            }
+          }
+          sendResponse({ ok: true, enabled: on });
+          break;
+        }
         case 'page-state': {
           // 内容脚本上报开关状态，用于在图标上显示角标
           const tabId = sender.tab && sender.tab.id;
           if (typeof tabId === 'number') {
+            tabEnabled.set(tabId, !!msg.enabled);
             try {
               await chrome.action.setBadgeText({ tabId, text: msg.enabled ? 'ON' : '' });
               await chrome.action.setBadgeBackgroundColor({ tabId, color: '#2563eb' });
@@ -577,9 +613,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 /* 快捷键 Alt+T：转发给内容脚本；页面未注入时兜底注入                    */
 /* ------------------------------------------------------------------ */
 async function ensureContentScript(tabId) {
-  await chrome.scripting.insertCSS({ target: { tabId }, files: ['src/content/content.css'] });
+  await chrome.scripting.insertCSS({ target: { tabId, allFrames: true }, files: ['src/content/content.css'] });
   await chrome.scripting.executeScript({
-    target: { tabId },
+    target: { tabId, allFrames: true },
     files: ['src/shared.js', 'src/content/content.js']
   });
 }
@@ -587,12 +623,12 @@ async function ensureContentScript(tabId) {
 /* ------------------------------------------------------------------ */
 /* 向标签页投递消息；内容脚本缺失时（安装前已打开的页面）先补注入          */
 /* ------------------------------------------------------------------ */
-async function deliver(tabId, msg) {
+async function deliver(tabId, msg, opts) {
   try {
-    return await chrome.tabs.sendMessage(tabId, msg);
+    return await chrome.tabs.sendMessage(tabId, msg, opts);
   } catch (e) {
     await ensureContentScript(tabId);
-    return await chrome.tabs.sendMessage(tabId, msg);
+    return await chrome.tabs.sendMessage(tabId, msg, opts);
   }
 }
 
@@ -621,8 +657,13 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   const tabId = tab && tab.id;
   if (typeof tabId !== 'number') return;
   try {
-    if (info.menuItemId === 'st-selection') await deliver(tabId, { type: 'translate-selection' });
-    else if (info.menuItemId === 'st-toggle') await deliver(tabId, { type: 'toggle' });
+    if (info.menuItemId === 'st-selection') {
+      // 在哪个 frame 里选的字就发给哪个 frame，跨域 iframe 里的正文也能划词翻
+      await deliver(tabId, { type: 'translate-selection' }, typeof info.frameId === 'number' ? { frameId: info.frameId } : undefined);
+    } else if (info.menuItemId === 'st-toggle') {
+      // 只让主 frame 翻一次，再由它把状态同步给其它 frame，避免每个 frame 各自翻转
+      await deliver(tabId, { type: 'toggle' }, { frameId: 0 });
+    }
   } catch (e) {
     /* chrome:// 等受限页面无法注入 */
   }
@@ -634,7 +675,8 @@ chrome.commands.onCommand.addListener(async (command) => {
   if (!tab || typeof tab.id !== 'number') return;
 
   try {
-    await deliver(tab.id, { type: 'toggle' });
+    // 主 frame 翻，再由它广播给 iframe（评论区、嵌入文档）
+    await deliver(tab.id, { type: 'toggle' }, { frameId: 0 });
   } catch (e) {
     try {
       await chrome.action.setBadgeText({ tabId: tab.id, text: '' });

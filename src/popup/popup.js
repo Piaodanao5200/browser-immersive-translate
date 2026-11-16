@@ -36,7 +36,8 @@
 
   async function sendToTab(msg) {
     if (!tab || typeof tab.id !== 'number') throw new Error('no tab');
-    return chrome.tabs.sendMessage(tab.id, msg);
+    // 只问主 frame：iframe 的状态由主 frame 的开关同步过去，问它只会拿到过时值
+    return chrome.tabs.sendMessage(tab.id, msg, { frameId: 0 });
   }
 
   async function refreshState() {
