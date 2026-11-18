@@ -32,6 +32,9 @@ USER_LINKS = [
 shell = win32com.client.Dispatch("WScript.Shell")
 cur = {}
 failed = []
+# 留一个调试端口，方便 tools/diag-live.mjs 连上「已登录」的浏览器排查问题
+DEBUG_PORT = os.environ.get("EGO_DEBUG_PORT", "9222")
+DEBUG_ARG = f"--remote-debugging-port={DEBUG_PORT}"
 
 
 def set_args(path, args, note=""):
@@ -69,7 +72,7 @@ for p in USER_LINKS:
     os.makedirs(os.path.dirname(p), exist_ok=True)
     sc = shell.CreateShortCut(p)
     sc.TargetPath = EGO
-    sc.Arguments = f'{TAG}"{EXT}"'
+    sc.Arguments = f'{TAG}"{EXT}" {DEBUG_ARG}'
     sc.WorkingDirectory = os.path.dirname(EGO)
     sc.IconLocation = EGO + ",0"
     sc.Description = "启动 ego 并加载字幕译扩展"

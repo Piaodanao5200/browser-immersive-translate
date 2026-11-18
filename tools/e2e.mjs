@@ -259,6 +259,35 @@ try {
   const full = await pageClient.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
   fs.writeFileSync(path.join(OUT, 'shot-full.png'), Buffer.from(full.data, 'base64'));
 
+  // 整页被站点打了 translate="no"（结算页、支付页常见）时：正文照翻，局部标记要尊重
+  await pageClient.send('Page.navigate', { url: 'http://127.0.0.1:8765/test/notranslate.html' });
+  await sleep(1600);
+  await waitFor(async () => evalOn(pageClient, `!!document.querySelector('#app')`), 20000);
+  await evalOn(
+    swClient,
+    `(async () => {
+      try { await chrome.tabs.sendMessage(${tab.id}, { type: 'set-enabled', enabled: false }); } catch (e) {}
+      await chrome.tabs.sendMessage(${tab.id}, { type: 'set-enabled', enabled: true });
+    })()`
+  );
+  await sleep(4500);
+  const nt = await evalOn(
+    pageClient,
+    `(() => {
+      const h1 = document.querySelector('h1');
+      const sib = h1 && h1.nextElementSibling;
+      const span = [...document.querySelectorAll('span[translate="no"]')][0];
+      return {
+        tr: document.querySelectorAll('[data-st-tr]').length,
+        h1zh: /[\\u4e00-\\u9fff]/.test(sib ? sib.textContent : ''),
+        keepName: !!span && span.textContent.trim() === 'Project Nightfall' && !span.querySelector('[data-st-tr]'),
+        preTouched: !!document.querySelector('pre [data-st-tr], pre + [data-st-tr]')
+      };
+    })()`
+  );
+  check('整页 translate=no 时正文照常翻译', nt.tr > 0 && nt.h1zh, JSON.stringify(nt));
+  check('局部 translate=no 的文本保持原样', nt.keepName && !nt.preTouched, JSON.stringify(nt));
+
   // 关闭翻译
   await evalOn(swClient, `(async () => await chrome.tabs.sendMessage(${tab.id}, { type: 'set-enabled', enabled: false }))()`);
   await sleep(600);

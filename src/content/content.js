@@ -154,14 +154,32 @@
     return true;
   }
 
+  /**
+   * 站点常给整页（html / body / 布局容器）挂 `translate="no"` 或 `.notranslate`，
+   * 目的是挡浏览器「自动翻译」——因为那种会原地改写文本节点，Safari 上的 React 站点更容易崩。
+   * 我们只是往后面追加译文节点、不动原文，所以不该被这种整页级别的标记拦住：
+   * 一旦拦住，正文通道整棵子树被跳过（属性通道不受影响），表现就是
+   * 「占位符、下拉选项翻出来了，正文一个字没翻」。
+   * 只尊重「局部」标记（单个代码片段、品牌名、邮箱这类）。
+   */
+  function respectsNoTranslate(el) {
+    const T = el.tagName;
+    if (T === 'HTML' || T === 'BODY' || T === 'MAIN' || T === 'ARTICLE') return false;
+    if (el.getAttribute('role') === 'main') return false;
+    // 标记的容器里装着大段正文/多个段落 → 站点是在挡整个翻译工具，不是在保护某一段文本
+    if (el.querySelector('h1,h2,h3,h4,p,article,main,li,blockquote,[role="main"]')) return false;
+    return true;
+  }
+
   /** 返回跳过原因（字符串），可翻译则返回 null。诊断与正式流程共用一套判断。 */
   function skipReason(el) {
     if (el.nodeType !== 1) return 'not-element';
     if (SKIP_TAGS.has(el.tagName)) return 'skip-tag:' + el.tagName.toLowerCase();
     if (isControl(el)) return 'control'; // 由 collectControls 单独处理
     if (el.hasAttribute(TR_ATTR) || el.hasAttribute(UNIT_ATTR)) return 'already-unit';
-    if (el.getAttribute('translate') === 'no') return 'translate-no';
-    if (el.classList && (el.classList.contains('notranslate') || el.classList.contains('st-tr'))) return 'notranslate';
+    if (el.getAttribute('translate') === 'no' && respectsNoTranslate(el)) return 'translate-no';
+    if (el.classList && el.classList.contains('st-tr')) return 'notranslate';
+    if (el.classList && el.classList.contains('notranslate') && respectsNoTranslate(el)) return 'notranslate';
     if (el.isContentEditable) return 'editable';
     if (el.closest('[contenteditable="true"],[contenteditable=""]')) return 'editable-parent';
     if (el.closest('[' + TR_ATTR + ']')) return 'inside-tr';
