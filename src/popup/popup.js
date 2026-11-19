@@ -168,5 +168,28 @@
     window.close();
   });
 
+  /* 页面诊断：登录后才能进的页面（结算页、会员页）没法用脚本复现，
+     把诊断结果复制出来直接发给开发者。 */
+  $('diag').addEventListener('click', async (e) => {
+    e.preventDefault();
+    const out = $('diagOut');
+    try {
+      const res = await sendToTab({ type: 'diag' });
+      const report = Object.assign({ url: tab && tab.url }, (res && res.data) || res);
+      const text = JSON.stringify(report, null, 1);
+      out.hidden = false;
+      out.value = text;
+      out.select();
+      try {
+        await navigator.clipboard.writeText(text);
+        flash('诊断信息已复制，粘贴发给开发者即可。');
+      } catch (err) {
+        flash('复制失败，直接 Ctrl+C 复制下面这段。');
+      }
+    } catch (err) {
+      flash('拿不到诊断信息：' + err.message + '（先刷新页面再试）');
+    }
+  });
+
   init();
 })();

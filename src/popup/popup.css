@@ -157,6 +157,18 @@ footer a:hover {
   text-decoration: underline;
 }
 
+#diagOut {
+  width: 100%;
+  margin-top: 8px;
+  padding: 6px 8px;
+  font: 11px/1.45 ui-monospace, Consolas, monospace;
+  color: var(--muted);
+  background: var(--bg-soft, #f7f7f8);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  resize: vertical;
+}
+
 .kbd {
   font-size: 11px;
   color: var(--muted);

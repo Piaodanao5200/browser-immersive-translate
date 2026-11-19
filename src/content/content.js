@@ -419,6 +419,15 @@
     };
     walk(document.body || document.documentElement);
     res.translatedNodes = document.querySelectorAll('[' + TR_ATTR + ']').length;
+    // 页面级线索：站点给根节点挂免翻标记、正文藏在 shadow DOM 里，都是常见「整页没翻」原因
+    res.root = {
+      htmlTranslate: document.documentElement.getAttribute('translate'),
+      htmlClass: String(document.documentElement.className || '').slice(0, 80),
+      bodyTranslate: document.body ? document.body.getAttribute('translate') : null,
+      bodyClass: document.body ? String(document.body.className || '').slice(0, 100) : null,
+      shadowHosts: [...document.querySelectorAll('*')].filter((e) => e.shadowRoot).length,
+      iframes: document.querySelectorAll('iframe').length
+    };
     return res;
   }
 

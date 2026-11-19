@@ -4,6 +4,8 @@
  *
  *   node tools/diag-live.mjs                     # 列出所有标签
  *   node tools/diag-live.mjs x.ai                # 对 URL 含 x.ai 的标签做诊断
+ *   node tools/diag-live.mjs x.ai --nav <url>    # 先打开这个地址再诊断
+ *   node tools/diag-live.mjs x.ai --enable       # 先开翻译再诊断
  *   node tools/diag-live.mjs x.ai --shot         # 顺便截图到 test/live.png
  *
  * 环境变量 PORT（默认 9222）。
@@ -16,6 +18,9 @@ const OUT = path.resolve(import.meta.dirname, '..', 'test');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const needle = (process.argv[2] || '').toLowerCase();
 const wantShot = process.argv.includes('--shot');
+const wantEnable = process.argv.includes('--enable');
+const navIdx = process.argv.indexOf('--nav');
+const navUrl = navIdx > 0 ? process.argv[navIdx + 1] : null;
 
 async function list() {
   const r = await fetch(`http://127.0.0.1:${PORT}/json/list`, { signal: AbortSignal.timeout(4000) });
@@ -103,7 +108,8 @@ try {
     for (const t of all) console.log(`- [${t.type}] ${t.url.slice(0, 150)}`);
     process.exit(0);
   }
-  const t = all.find((x) => x.type === 'page' && (x.url || '').toLowerCase().includes(needle));
+  let t = all.find((x) => x.type === 'page' && (x.url || '').toLowerCase().includes(needle));
+  if (!t && navUrl) t = all.find((x) => x.type === 'page');
   if (!t) {
     console.error(`没找到 URL 含「${needle}」的标签。现有：`);
     for (const x of all) console.log(`- [${x.type}] ${x.url.slice(0, 150)}`);
@@ -111,6 +117,11 @@ try {
   }
   const page = await cdp(t.webSocketDebuggerUrl);
   await page.send('Runtime.enable');
+  if (navUrl) {
+    await page.send('Page.enable');
+    await page.send('Page.navigate', { url: navUrl });
+    await sleep(7000);
+  }
   const info = await evalOn(page, PAGE_INFO);
   console.log(JSON.stringify(info, null, 2));
 
@@ -132,6 +143,12 @@ try {
   if (extT) {
     const ctrl = await cdp(extT.webSocketDebuggerUrl);
     await ctrl.send('Runtime.enable');
+    // 扩展页刚起来时 chrome.tabs 还没就绪，等一下再发消息
+    for (let i = 0; i < 30; i++) {
+      const ok = await evalOn(ctrl, `!!(window.chrome && chrome.tabs && chrome.tabs.query)`, 6000).catch(() => false);
+      if (ok) break;
+      await sleep(400);
+    }
     const diag = await evalOn(
       ctrl,
       `(async () => {
@@ -139,14 +156,22 @@ try {
         const tab = tabs.find((x) => (x.url || '').includes(${JSON.stringify(needle)}));
         if (!tab) return { error: '扩展看不到这个标签', tabs: tabs.map(t => t.url.slice(0, 90)) };
         try {
+          if (${wantEnable ? 'true' : 'false'}) {
+            try { await chrome.tabs.sendMessage(tab.id, { type: 'set-enabled', enabled: false }); } catch (e) {}
+            await chrome.tabs.sendMessage(tab.id, { type: 'set-enabled', enabled: true });
+            await new Promise(r => setTimeout(r, 8000));
+          }
           const r = await chrome.tabs.sendMessage(tab.id, { type: 'diag' });
           return { tabId: tab.id, diag: r };
         } catch (e) { return { error: '内容脚本无回应: ' + e.message }; }
       })()`,
-      30000
+      60000
     );
     console.log('\n=== 内容脚本 diag ===');
     console.log(JSON.stringify(diag, null, 2));
+    const after = await evalOn(page, PAGE_INFO);
+    console.log('\n=== 开翻后的页面状态 ===');
+    console.log(JSON.stringify(after, null, 2));
   } else {
     console.log('\n! 找不到扩展页面，跳过 diag');
   }
