@@ -281,11 +281,13 @@ try {
         tr: document.querySelectorAll('[data-st-tr]').length,
         h1zh: /[\\u4e00-\\u9fff]/.test(sib ? sib.textContent : ''),
         keepName: !!span && span.textContent.trim() === 'Project Nightfall' && !span.querySelector('[data-st-tr]'),
+        rnw: document.querySelectorAll('#rnw [data-st-tr]').length,
         preTouched: !!document.querySelector('pre [data-st-tr], pre + [data-st-tr]')
       };
     })()`
   );
   check('整页 translate=no 时正文照常翻译', nt.tr > 0 && nt.h1zh, JSON.stringify(nt));
+  check('RNW 风格容器（只有 div/span）也照翻', nt.rnw >= 2, JSON.stringify(nt));
   check('局部 translate=no 的文本保持原样', nt.keepName && !nt.preTouched, JSON.stringify(nt));
 
   // 关闭翻译

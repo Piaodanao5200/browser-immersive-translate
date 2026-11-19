@@ -166,8 +166,12 @@
     const T = el.tagName;
     if (T === 'HTML' || T === 'BODY' || T === 'MAIN' || T === 'ARTICLE') return false;
     if (el.getAttribute('role') === 'main') return false;
-    // 标记的容器里装着大段正文/多个段落 → 站点是在挡整个翻译工具，不是在保护某一段文本
+    // 标记的容器里装着大段正文/多个段落 → 站点是在挡整个翻译工具，不是在保护某一段文本。
+    // 注意 React Native Web（X/Twitter 这类）的正文全是 div/span，没有 h1/p，只能按体量和块数判断。
     if (el.querySelector('h1,h2,h3,h4,p,article,main,li,blockquote,[role="main"]')) return false;
+    const text = normalize(el.textContent || '');
+    if (text.length > 120) return false;
+    if (text.length > 40 && el.querySelectorAll('div,span').length >= 3) return false;
     return true;
   }
 
